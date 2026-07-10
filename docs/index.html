@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Informe de alquileres</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="container">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Búsqueda personal</p>
+        <h1>Informe de alquileres</h1>
+        <p id="status">Cargando resultados…</p>
+      </div>
+      <a class="button" href="../data/results.csv">Descargar CSV</a>
+    </header>
+
+    <section class="summary" id="summary"></section>
+
+    <section class="filters-panel">
+      <div>
+        <label for="text-filter">Buscar en resultados</label>
+        <input id="text-filter" type="search" placeholder="Zona, título, inmobiliaria…">
+      </div>
+      <div>
+        <label for="sort">Ordenar</label>
+        <select id="sort">
+          <option value="score">Mejor estado</option>
+          <option value="price-asc">Menor precio</option>
+          <option value="price-desc">Mayor precio</option>
+          <option value="recent">Más recientes</option>
+        </select>
+      </div>
+    </section>
+
+    <section id="results" class="results"></section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
