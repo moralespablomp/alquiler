@@ -6,7 +6,6 @@ import sys
 import threading
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -18,13 +17,7 @@ RESULTS_JSON = DATA_DIR / "results.json"
 RESULTS_CSV = DATA_DIR / "results.csv"
 
 app = Flask(__name__, static_folder=str(DOCS_DIR), static_url_path="")
-
-_state: dict[str, Any] = {
-    "running": False,
-    "last_success": None,
-    "last_error": None,
-    "log": [],
-}
+_state: dict[str, Any] = {"running": False, "last_success": None, "last_error": None, "log": []}
 _state_lock = threading.Lock()
 
 
@@ -38,41 +31,24 @@ def read_config() -> dict[str, Any]:
     return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 
-def valid_http_url(value: str) -> bool:
-    parsed = urlparse(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
-
-
 def validate_config(payload: Any) -> tuple[dict[str, Any] | None, str | None]:
     if not isinstance(payload, dict):
-        return None, "La configuración debe ser un objeto."
-
+        return None, "La configuración no es válida."
     filters = payload.get("filters")
-    sources = payload.get("sources")
-    if not isinstance(filters, dict) or not isinstance(sources, list):
-        return None, "Faltan filtros o inmobiliarias."
-
-    cleaned_sources: list[dict[str, Any]] = []
-    for index, source in enumerate(sources, start=1):
-        if not isinstance(source, dict):
-            return None, f"La inmobiliaria {index} no es válida."
-        name = str(source.get("name", "")).strip()
-        urls = source.get("start_urls", [])
-        if not name:
-            return None, f"La inmobiliaria {index} no tiene nombre."
-        if not isinstance(urls, list) or not urls:
-            return None, f"{name} necesita al menos una URL."
-        cleaned_urls = [str(url).strip() for url in urls if str(url).strip()]
-        if not cleaned_urls or any(not valid_http_url(url) for url in cleaned_urls):
-            return None, f"{name} contiene una URL inválida."
-        cleaned_sources.append({
-            "name": name,
-            "enabled": bool(source.get("enabled", True)),
-            "start_urls": cleaned_urls,
-            "selectors": source.get("selectors", {}) if isinstance(source.get("selectors", {}), dict) else {},
-        })
-
-    cleaned = {"filters": filters, "sources": cleaned_sources}
+    portals = payload.get("portals")
+    browser = payload.get("browser", {})
+    if not isinstance(filters, dict) or not isinstance(portals, dict):
+        return None, "Faltan filtros o portales."
+    zones = [str(x).strip() for x in filters.get("zones", []) if str(x).strip()]
+    if not zones:
+        return None, "Agregá al menos una zona."
+    allowed = {"zonaprop", "argenprop"}
+    cleaned_portals = {key: bool(portals.get(key, False)) for key in allowed}
+    cleaned = {
+        "filters": {**filters, "zones": zones},
+        "portals": cleaned_portals,
+        "browser": {"headless": bool(browser.get("headless", False))},
+    }
     return cleaned, None
 
 
@@ -80,26 +56,18 @@ def run_scraper() -> None:
     with _state_lock:
         if _state["running"]:
             return
-        _state["running"] = True
-        _state["last_success"] = None
-        _state["last_error"] = None
-        _state["log"] = ["Iniciando búsqueda..."]
-
+        _state.update({"running": True, "last_success": None, "last_error": None, "log": ["Iniciando búsqueda..."]})
     try:
         process = subprocess.Popen(
-            [sys.executable, "-m", "src.main"],
-            cwd=ROOT,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            [sys.executable, "-m", "src.main"], cwd=ROOT,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
         )
-        if process.stdout is not None:
+        if process.stdout:
             for line in process.stdout:
                 append_log(line)
-        return_code = process.wait()
-        if return_code != 0:
-            raise RuntimeError(f"El scraper terminó con código {return_code}.")
+        code = process.wait()
+        if code != 0:
+            raise RuntimeError(f"El buscador terminó con código {code}.")
         with _state_lock:
             _state["last_success"] = True
         append_log("Búsqueda finalizada correctamente.")
@@ -120,10 +88,7 @@ def index():
 
 @app.get("/api/config")
 def get_config():
-    try:
-        return jsonify(read_config())
-    except (OSError, json.JSONDecodeError) as error:
-        return jsonify({"error": f"No se pudo leer la configuración: {error}"}), 500
+    return jsonify(read_config())
 
 
 @app.put("/api/config")
@@ -131,29 +96,20 @@ def save_config():
     cleaned, error = validate_config(request.get_json(silent=True))
     if error:
         return jsonify({"error": error}), 400
-    try:
-        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG_PATH.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        return jsonify({"ok": True, "config": cleaned})
-    except OSError as write_error:
-        return jsonify({"error": f"No se pudo guardar: {write_error}"}), 500
+    CONFIG_PATH.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return jsonify({"ok": True, "config": cleaned})
 
 
 @app.post("/api/run")
 def start_search():
     with _state_lock:
         if _state["running"]:
-            return jsonify({"ok": False, "error": "Ya hay una búsqueda en ejecución."}), 409
-    try:
-        config = read_config()
-        enabled = [source for source in config.get("sources", []) if source.get("enabled")]
-        if not enabled:
-            return jsonify({"ok": False, "error": "Agregá y activá al menos una inmobiliaria."}), 400
-    except (OSError, json.JSONDecodeError) as error:
-        return jsonify({"ok": False, "error": f"Configuración inválida: {error}"}), 500
-
+            return jsonify({"error": "Ya hay una búsqueda en ejecución."}), 409
+    config = read_config()
+    if not any(config.get("portals", {}).values()):
+        return jsonify({"error": "Activá al menos un portal."}), 400
     threading.Thread(target=run_scraper, daemon=True).start()
-    return jsonify({"ok": True, "message": "Búsqueda iniciada."})
+    return jsonify({"ok": True})
 
 
 @app.get("/api/status")
@@ -166,16 +122,13 @@ def search_status():
 def results():
     if not RESULTS_JSON.exists():
         return jsonify({"generated_at": None, "total": 0, "filters": {}, "properties": []})
-    try:
-        return jsonify(json.loads(RESULTS_JSON.read_text(encoding="utf-8")))
-    except (OSError, json.JSONDecodeError) as error:
-        return jsonify({"error": f"No se pudieron leer los resultados: {error}"}), 500
+    return jsonify(json.loads(RESULTS_JSON.read_text(encoding="utf-8")))
 
 
 @app.get("/api/results.csv")
 def results_csv():
     if not RESULTS_CSV.exists():
-        return jsonify({"error": "Todavía no existe un archivo CSV de resultados."}), 404
+        return jsonify({"error": "Todavía no hay resultados."}), 404
     return send_from_directory(DATA_DIR, "results.csv", as_attachment=True)
 
 
