@@ -12,69 +12,42 @@
       <div>
         <p class="eyebrow">Búsqueda personal</p>
         <h1>Buscador de alquileres</h1>
-        <p id="status">Cargando resultados…</p>
+        <p id="status">Cargando…</p>
       </div>
       <div class="hero-actions">
-        <button class="button" id="run-search" type="button">Ejecutar búsqueda</button>
+        <button class="button" id="run-search">Buscar ahora</button>
         <a class="button secondary" href="/api/results.csv">Descargar CSV</a>
       </div>
     </header>
 
-    <section class="config-panel">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">Configuración</p>
-          <h2>Qué querés buscar</h2>
+    <section class="settings-panel">
+      <h2>Configuración de búsqueda</h2>
+      <div class="form-grid">
+        <div class="full"><label>Zonas, separadas por coma</label><input id="zones" placeholder="Ramos Mejía, Haedo, Castelar"></div>
+        <div><label>Ambientes mínimos</label><input id="min-rooms" type="number" min="1"></div>
+        <div><label>Ambientes máximos</label><input id="max-rooms" type="number" min="1"></div>
+        <div><label>Precio máximo ARS</label><input id="max-price" type="number" min="0"></div>
+        <div><label>Superficie mínima m²</label><input id="min-area" type="number" min="0"></div>
+        <div class="full portal-options">
+          <label><input id="portal-zonaprop" type="checkbox"> Zonaprop</label>
+          <label><input id="portal-argenprop" type="checkbox"> Argenprop</label>
+          <label><input id="visible-browser" type="checkbox"> Mostrar navegador durante la búsqueda</label>
         </div>
-        <button class="button secondary" id="save-config" type="button">Guardar configuración</button>
       </div>
-
-      <div class="config-grid">
-        <label>Zonas, separadas por coma<input id="zones" type="text" placeholder="Ramos Mejía, Haedo, Castelar"></label>
-        <label>Tipos de propiedad<input id="property-types" type="text" placeholder="departamento, ph, casa"></label>
-        <label>Ambientes mínimos<input id="min-rooms" type="number" min="0" step="1"></label>
-        <label>Ambientes máximos<input id="max-rooms" type="number" min="0" step="1"></label>
-        <label>Precio máximo<input id="max-price" type="number" min="0" step="1000"></label>
-        <label>Expensas máximas<input id="max-expenses" type="number" min="0" step="1000"></label>
-        <label>Superficie mínima (m²)<input id="min-area" type="number" min="0" step="1"></label>
-        <label>Antigüedad máxima (años)<input id="max-age" type="number" min="0" step="1"></label>
-        <label class="checkbox-field"><input id="parking-required" type="checkbox"> Cochera obligatoria</label>
-      </div>
-
-      <div class="section-heading sources-heading">
-        <div>
-          <p class="eyebrow">Fuentes</p>
-          <h2>Inmobiliarias</h2>
-        </div>
-        <button class="button secondary" id="add-source" type="button">Agregar inmobiliaria</button>
-      </div>
-      <div id="sources" class="sources-list"></div>
-      <p id="config-message" class="form-message"></p>
+      <button class="button secondary" id="save-config">Guardar configuración</button>
+      <span id="save-message"></span>
     </section>
 
     <section id="execution-panel" class="execution-panel" hidden>
-      <strong id="execution-title">Ejecutando búsqueda…</strong>
+      <strong id="execution-title">Estado</strong>
       <pre id="execution-log"></pre>
     </section>
 
     <section class="summary" id="summary"></section>
-
     <section class="filters-panel">
-      <div>
-        <label for="text-filter">Buscar en resultados</label>
-        <input id="text-filter" type="search" placeholder="Zona, título, inmobiliaria…">
-      </div>
-      <div>
-        <label for="sort">Ordenar</label>
-        <select id="sort">
-          <option value="score">Mejor estado</option>
-          <option value="price-asc">Menor precio</option>
-          <option value="price-desc">Mayor precio</option>
-          <option value="recent">Más recientes</option>
-        </select>
-      </div>
+      <div><label>Filtrar resultados</label><input id="text-filter" type="search" placeholder="Zona, título, portal…"></div>
+      <div><label>Ordenar</label><select id="sort"><option value="score">Mejor estado</option><option value="price-asc">Menor precio</option><option value="price-desc">Mayor precio</option><option value="recent">Más recientes</option></select></div>
     </section>
-
     <section id="results" class="results"></section>
   </main>
   <script src="app.js"></script>
