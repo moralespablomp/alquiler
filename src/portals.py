@@ -76,6 +76,25 @@ def _text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value)).strip()
 
 
+def _image_urls(value: Any, base_url: str) -> list[str]:
+    candidates: list[str] = []
+    if isinstance(value, str):
+        candidates.append(value)
+    elif isinstance(value, list):
+        for item in value:
+            candidates.extend(_image_urls(item, base_url))
+    elif isinstance(value, dict):
+        for key in ("url", "contentUrl", "thumbnailUrl"):
+            if value.get(key):
+                candidates.extend(_image_urls(value[key], base_url))
+    result: list[str] = []
+    for candidate in candidates:
+        absolute = urljoin(base_url, candidate.strip())
+        if absolute.startswith("http") and absolute not in result:
+            result.append(absolute)
+    return result[:12]
+
+
 def _walk(value: Any) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     if isinstance(value, list):
@@ -106,9 +125,7 @@ def extract_jsonld(html: str, source: str, page_url: str) -> list[dict[str, Any]
             nested = item.get("item") if isinstance(item.get("item"), dict) else item
             offers = nested.get("offers") if isinstance(nested.get("offers"), dict) else {}
             address = nested.get("address") if isinstance(nested.get("address"), dict) else {}
-            image = nested.get("image")
-            if isinstance(image, list):
-                image = image[0] if image else None
+            images = _image_urls(nested.get("image") or item.get("image"), page_url)
             url = nested.get("url") or offers.get("url") or item.get("url")
             title = nested.get("name") or item.get("name")
             if not url or not title:
@@ -125,7 +142,8 @@ def extract_jsonld(html: str, source: str, page_url: str) -> list[dict[str, Any]
                 "currency": _text(offers.get("priceCurrency")),
                 "location": _text(address),
                 "description": _text(nested.get("description")),
-                "image": _text(image),
+                "image": images[0] if images else "",
+                "images": images,
             })
     return results
 
@@ -157,7 +175,13 @@ def extract_cards(html: str, source: str, page_url: str) -> list[dict[str, Any]]
         if len(text) < 25:
             continue
         seen.add(url)
-        image = card.select_one("img")
+        images: list[str] = []
+        for image in card.select("img"):
+            candidate = image.get("src") or image.get("data-src") or image.get("data-lazy-src")
+            if candidate:
+                absolute_image = urljoin(page_url, str(candidate))
+                if absolute_image not in images:
+                    images.append(absolute_image)
         price_match = re.search(r"(?:US\$|U\$S|USD|\$)\s*[\d.]+", text, re.I)
         results.append({
             "source": source,
@@ -167,7 +191,8 @@ def extract_cards(html: str, source: str, page_url: str) -> list[dict[str, Any]]
             "currency": "USD" if price_match and "US" in price_match.group(0).upper() else "ARS",
             "location": text,
             "description": text,
-            "image": urljoin(page_url, image.get("src", "")) if image else "",
+            "image": images[0] if images else "",
+            "images": images[:12],
         })
     return results
 
