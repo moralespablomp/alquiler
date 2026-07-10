@@ -9,7 +9,7 @@ on:
         default: true
         type: boolean
   schedule:
-    - cron: "15 11 * * *"
+    - cron: "15 * * * *"
 
 permissions:
   contents: write
@@ -37,6 +37,8 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Ejecutar búsqueda
+        env:
+          CONFIG_URL: https://alquiler-radar.pablomoralesmp.chatgpt.site/api/config?format=scraper
         run: python -m src.main
 
       - name: Guardar resultados
