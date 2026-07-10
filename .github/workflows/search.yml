@@ -1,0 +1,62 @@
+name: Buscar alquileres
+
+on:
+  workflow_dispatch:
+    inputs:
+      save_results:
+        description: Guardar resultados en el repositorio
+        required: true
+        default: true
+        type: boolean
+  schedule:
+    - cron: "15 11 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rental-search
+  cancel-in-progress: false
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Descargar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Ejecutar búsqueda
+        run: python -m src.main
+
+      - name: Guardar resultados
+        if: github.event_name == 'schedule' || inputs.save_results == true
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/results.json data/results.csv
+          if git diff --cached --quiet; then
+            echo "No hubo cambios para guardar"
+          else
+            git commit -m "data: actualizar informe de alquileres"
+            git push
+          fi
+
+      - name: Publicar archivos descargables
+        uses: actions/upload-artifact@v4
+        with:
+          name: informe-alquileres
+          path: |
+            data/results.json
+            data/results.csv
+          retention-days: 14
