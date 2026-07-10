@@ -1,16 +1,16 @@
-const state = { properties: [], filtered: [] };
+const state = { properties: [], filtered: [], config: { filters: {}, sources: [] } };
 
 const money = (value, currency = "ARS") => {
   if (value === null || value === undefined) return "Precio no informado";
-  return new Intl.NumberFormat("es-AR", {
-    style: "currency",
-    currency,
-    maximumFractionDigits: 0,
-  }).format(value);
+  return new Intl.NumberFormat("es-AR", { style: "currency", currency, maximumFractionDigits: 0 }).format(value);
 };
 
-const valueOrDash = (value, suffix = "") =>
-  value === null || value === undefined ? "—" : `${value}${suffix}`;
+const valueOrDash = (value, suffix = "") => value === null || value === undefined ? "—" : `${value}${suffix}`;
+const splitList = (value) => value.split(",").map((item) => item.trim()).filter(Boolean);
+const numericValue = (id, fallback = 0) => {
+  const value = Number(document.querySelector(id).value);
+  return Number.isFinite(value) ? value : fallback;
+};
 
 function renderSummary(payload) {
   const filters = payload.filters || {};
@@ -27,17 +27,12 @@ function card(property) {
     ? `<img src="${property.image}" alt="" loading="lazy" onerror="this.remove()">`
     : `<div class="image-placeholder">Sin imagen</div>`;
   const parking = property.parking === true ? "Sí" : property.parking === false ? "No" : "—";
-
   return `
     <article class="property-card">
       ${image}
       <div class="property-content">
         <div class="property-heading">
-          <div>
-            <p class="source">${property.source}</p>
-            <h2>${property.title}</h2>
-            <p class="location">${property.location || "Ubicación no informada"}</p>
-          </div>
+          <div><p class="source">${property.source}</p><h2>${property.title}</h2><p class="location">${property.location || "Ubicación no informada"}</p></div>
           <span class="score">${property.condition_score}/100</span>
         </div>
         <p class="price">${money(property.price, property.currency)}</p>
@@ -51,14 +46,13 @@ function card(property) {
         <p class="description">${property.description || "Sin descripción disponible."}</p>
         <a class="button secondary" href="${property.url}" target="_blank" rel="noopener noreferrer">Ver publicación</a>
       </div>
-    </article>
-  `;
+    </article>`;
 }
 
 function render() {
   const container = document.querySelector("#results");
   if (!state.filtered.length) {
-    container.innerHTML = `<div class="empty"><h2>No hay resultados</h2><p>Revisá las fuentes y filtros en <code>config/searches.json</code>, y luego ejecutá una búsqueda.</p></div>`;
+    container.innerHTML = `<div class="empty"><h2>No hay resultados</h2><p>Agregá una inmobiliaria, guardá la configuración y ejecutá una búsqueda.</p></div>`;
     return;
   }
   container.innerHTML = state.filtered.map(card).join("");
@@ -67,10 +61,7 @@ function render() {
 function applyControls() {
   const query = document.querySelector("#text-filter").value.toLowerCase().trim();
   const sort = document.querySelector("#sort").value;
-  state.filtered = state.properties.filter((item) =>
-    `${item.title} ${item.location} ${item.source} ${item.description}`.toLowerCase().includes(query)
-  );
-
+  state.filtered = state.properties.filter((item) => `${item.title} ${item.location} ${item.source} ${item.description}`.toLowerCase().includes(query));
   state.filtered.sort((a, b) => {
     if (sort === "price-asc") return (a.price ?? Infinity) - (b.price ?? Infinity);
     if (sort === "price-desc") return (b.price ?? -1) - (a.price ?? -1);
@@ -78,6 +69,80 @@ function applyControls() {
     return b.condition_score - a.condition_score;
   });
   render();
+}
+
+function sourceRow(source = {}) {
+  const row = document.createElement("article");
+  row.className = "source-row";
+  row.innerHTML = `
+    <label class="checkbox-field"><input class="source-enabled" type="checkbox" ${source.enabled !== false ? "checked" : ""}> Activa</label>
+    <label>Nombre<input class="source-name" type="text" value="${source.name || ""}" placeholder="Nombre de la inmobiliaria"></label>
+    <label>URL de alquileres<input class="source-url" type="url" value="${(source.start_urls || [""])[0] || ""}" placeholder="https://inmobiliaria.com/alquileres"></label>
+    <button class="button danger remove-source" type="button">Eliminar</button>`;
+  row.querySelector(".remove-source").addEventListener("click", () => row.remove());
+  return row;
+}
+
+function renderConfig() {
+  const filters = state.config.filters || {};
+  document.querySelector("#zones").value = (filters.zones || []).join(", ");
+  document.querySelector("#property-types").value = (filters.property_types || []).join(", ");
+  document.querySelector("#min-rooms").value = filters.min_rooms ?? 0;
+  document.querySelector("#max-rooms").value = filters.max_rooms ?? 10;
+  document.querySelector("#max-price").value = filters.max_price ?? 0;
+  document.querySelector("#max-expenses").value = filters.max_expenses ?? 0;
+  document.querySelector("#min-area").value = filters.min_area_m2 ?? 0;
+  document.querySelector("#max-age").value = filters.max_age_years ?? 100;
+  document.querySelector("#parking-required").checked = Boolean(filters.parking_required);
+  const sources = document.querySelector("#sources");
+  sources.innerHTML = "";
+  (state.config.sources || []).forEach((source) => sources.appendChild(sourceRow(source)));
+}
+
+async function loadConfig() {
+  const response = await fetch("/api/config", { cache: "no-store" });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "No se pudo cargar la configuración.");
+  state.config = payload;
+  renderConfig();
+}
+
+async function saveConfig() {
+  const message = document.querySelector("#config-message");
+  const sources = [...document.querySelectorAll(".source-row")].map((row) => ({
+    name: row.querySelector(".source-name").value.trim(),
+    enabled: row.querySelector(".source-enabled").checked,
+    start_urls: [row.querySelector(".source-url").value.trim()],
+    selectors: {},
+  }));
+  const current = state.config.filters || {};
+  const payload = {
+    filters: {
+      ...current,
+      zones: splitList(document.querySelector("#zones").value),
+      property_types: splitList(document.querySelector("#property-types").value),
+      min_rooms: numericValue("#min-rooms"),
+      max_rooms: numericValue("#max-rooms", 10),
+      max_price: numericValue("#max-price"),
+      max_expenses: numericValue("#max-expenses"),
+      min_area_m2: numericValue("#min-area"),
+      max_age_years: numericValue("#max-age", 100),
+      parking_required: document.querySelector("#parking-required").checked,
+    },
+    sources,
+  };
+  message.textContent = "Guardando…";
+  const response = await fetch("/api/config", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  const result = await response.json();
+  if (!response.ok) {
+    message.textContent = result.error || "No se pudo guardar.";
+    message.className = "form-message error";
+    return false;
+  }
+  state.config = result.config;
+  message.textContent = "Configuración guardada.";
+  message.className = "form-message success";
+  return true;
 }
 
 async function load() {
@@ -88,14 +153,11 @@ async function load() {
     state.properties = payload.properties || [];
     state.filtered = [...state.properties];
     renderSummary(payload);
-    const generated = payload.generated_at
-      ? new Date(payload.generated_at).toLocaleString("es-AR")
-      : "Todavía no se ejecutó una búsqueda";
+    const generated = payload.generated_at ? new Date(payload.generated_at).toLocaleString("es-AR") : "Todavía no se ejecutó una búsqueda";
     document.querySelector("#status").textContent = `Última actualización: ${generated}`;
     applyControls();
   } catch (error) {
     document.querySelector("#status").textContent = "No se pudieron cargar los resultados.";
-    document.querySelector("#results").innerHTML = `<div class="empty"><p>${error.message}</p></div>`;
   }
 }
 
@@ -104,35 +166,25 @@ async function pollStatus() {
   const title = document.querySelector("#execution-title");
   const log = document.querySelector("#execution-log");
   const button = document.querySelector("#run-search");
-
   const response = await fetch("/api/status", { cache: "no-store" });
   const status = await response.json();
-
   panel.hidden = false;
-  log.textContent = status.log || "Sin mensajes todavía.";
+  log.textContent = Array.isArray(status.log) ? status.log.join("\n") : "Sin mensajes todavía.";
   button.disabled = status.running;
   button.textContent = status.running ? "Buscando…" : "Ejecutar búsqueda";
-  title.textContent = status.running
-    ? "Ejecutando búsqueda…"
-    : status.last_success === true
-      ? "Búsqueda terminada"
-      : status.last_success === false
-        ? "La búsqueda terminó con errores"
-        : "Estado de ejecución";
-
-  if (status.running) {
-    window.setTimeout(pollStatus, 1200);
-  } else {
-    await load();
-  }
+  title.textContent = status.running ? "Ejecutando búsqueda…" : status.last_success === true ? "Búsqueda terminada" : status.last_success === false ? "La búsqueda terminó con errores" : "Estado de ejecución";
+  if (status.running) window.setTimeout(pollStatus, 1200);
+  else await load();
 }
 
 async function runSearch() {
+  const saved = await saveConfig();
+  if (!saved) return;
   const button = document.querySelector("#run-search");
   button.disabled = true;
   const response = await fetch("/api/run", { method: "POST" });
+  const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({}));
     alert(payload.error || "No se pudo iniciar la búsqueda.");
     button.disabled = false;
     return;
@@ -143,4 +195,10 @@ async function runSearch() {
 document.querySelector("#text-filter").addEventListener("input", applyControls);
 document.querySelector("#sort").addEventListener("change", applyControls);
 document.querySelector("#run-search").addEventListener("click", runSearch);
-load();
+document.querySelector("#save-config").addEventListener("click", saveConfig);
+document.querySelector("#add-source").addEventListener("click", () => document.querySelector("#sources").appendChild(sourceRow()));
+
+Promise.all([loadConfig(), load()]).catch((error) => {
+  document.querySelector("#config-message").textContent = error.message;
+  document.querySelector("#config-message").className = "form-message error";
+});
