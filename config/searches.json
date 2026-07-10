@@ -1,0 +1,39 @@
+{
+  "filters": {
+    "zones": ["Ramos Mejía", "Haedo", "Castelar"],
+    "property_types": ["departamento", "ph", "casa"],
+    "min_rooms": 2,
+    "max_rooms": 4,
+    "max_price": 900000,
+    "max_expenses": 180000,
+    "min_area_m2": 45,
+    "parking_required": false,
+    "max_age_years": 35,
+    "exclude_condition_score_below": 45,
+    "excluded_words": [
+      "a refaccionar",
+      "estado original",
+      "de época",
+      "requiere mejoras",
+      "con humedad"
+    ]
+  },
+  "sources": [
+    {
+      "name": "Fuente de ejemplo",
+      "enabled": false,
+      "start_urls": ["https://ejemplo.com/alquileres"],
+      "selectors": {
+        "card": ".property-card",
+        "title": ".property-title",
+        "url": "a",
+        "price": ".property-price",
+        "expenses": ".property-expenses",
+        "location": ".property-location",
+        "description": ".property-description",
+        "features": ".property-features",
+        "image": "img"
+      }
+    }
+  ]
+}
