@@ -20,7 +20,7 @@
   },
   "portals": {
     "zonaprop": true,
-    "argenprop": false
+    "argenprop": true
   },
   "browser": {
     "headless": false
