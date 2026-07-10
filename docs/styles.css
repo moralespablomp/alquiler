@@ -10,11 +10,17 @@ body { margin: 0; }
 a { color: inherit; }
 .container { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0 80px; }
 .hero { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 28px; }
+.hero-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .eyebrow, .source { text-transform: uppercase; letter-spacing: .08em; font-size: .75rem; font-weight: 700; color: #667085; margin: 0 0 6px; }
 h1 { margin: 0; font-size: clamp(2rem, 5vw, 3.7rem); line-height: 1.05; }
 #status { color: #667085; }
-.button { display: inline-flex; align-items: center; justify-content: center; padding: 11px 16px; border-radius: 10px; background: #172033; color: white; text-decoration: none; font-weight: 700; border: 0; }
+.button { cursor: pointer; display: inline-flex; align-items: center; justify-content: center; padding: 11px 16px; border-radius: 10px; background: #172033; color: white; text-decoration: none; font-weight: 700; border: 0; font: inherit; }
+.button:hover { opacity: .9; }
+.button:disabled { cursor: wait; opacity: .55; }
 .button.secondary { background: #eef1f5; color: #172033; }
+.execution-panel { background: #101828; color: #f8fafc; border-radius: 14px; padding: 16px; margin-bottom: 20px; }
+.execution-panel strong { display: block; margin-bottom: 10px; }
+.execution-panel pre { margin: 0; max-height: 260px; overflow: auto; white-space: pre-wrap; font-size: .82rem; color: #d0d5dd; }
 .summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 20px; }
 .summary article { background: white; border: 1px solid #e4e7ec; border-radius: 14px; padding: 18px; display: flex; flex-direction: column; gap: 3px; }
 .summary strong { font-size: 1.15rem; }
@@ -42,6 +48,7 @@ code { background: #eef1f5; padding: 2px 5px; border-radius: 5px; }
 @media (max-width: 760px) {
   .container { width: min(100% - 20px, 1180px); padding-top: 24px; }
   .hero { align-items: stretch; flex-direction: column; }
+  .hero-actions { flex-direction: column; }
   .summary, .filters-panel { grid-template-columns: 1fr; }
   .property-card { grid-template-columns: 1fr; }
   .property-card img, .image-placeholder { min-height: 210px; max-height: 260px; }
