@@ -3,53 +3,111 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
   <title>Buscador de alquileres</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <main class="container">
-    <header class="hero">
-      <div>
-        <p class="eyebrow">Búsqueda personal</p>
-        <h1>Buscador de alquileres</h1>
-        <p id="status">Cargando…</p>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark">A</div>
+        <div>
+          <strong>Alquileres</strong>
+          <span>Buscador personal</span>
+        </div>
       </div>
-      <div class="hero-actions">
-        <button class="button" id="run-search">Buscar ahora</button>
-        <a class="button secondary" href="/api/results.csv">Descargar CSV</a>
+      <div class="topbar-actions">
+        <button class="button ghost" id="toggle-settings" type="button">Configurar</button>
+        <a class="button ghost" href="/api/results.csv">Exportar CSV</a>
+        <button class="button primary" id="run-search" type="button">Buscar ahora</button>
       </div>
     </header>
 
-    <section class="settings-panel">
-      <h2>Configuración de búsqueda</h2>
-      <div class="form-grid">
-        <div class="full"><label>Zonas, separadas por coma</label><input id="zones" placeholder="Ramos Mejía, Haedo, Castelar"></div>
-        <div><label>Ambientes mínimos</label><input id="min-rooms" type="number" min="1"></div>
-        <div><label>Ambientes máximos</label><input id="max-rooms" type="number" min="1"></div>
-        <div><label>Precio máximo ARS</label><input id="max-price" type="number" min="0"></div>
-        <div><label>Superficie mínima m²</label><input id="min-area" type="number" min="0"></div>
-        <div class="full portal-options">
-          <label><input id="portal-zonaprop" type="checkbox"> Zonaprop</label>
-          <label><input id="portal-argenprop" type="checkbox"> Argenprop</label>
-          <label><input id="visible-browser" type="checkbox"> Mostrar navegador durante la búsqueda</label>
+    <main class="container">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Búsqueda consolidada</p>
+          <h1>Encontrá mejores opciones de alquiler</h1>
+          <p class="hero-copy">Compará resultados de Zonaprop y Argenprop en una sola vista.</p>
         </div>
-      </div>
-      <button class="button secondary" id="save-config">Guardar configuración</button>
-      <span id="save-message"></span>
-    </section>
+        <div class="status-pill" id="status">Cargando…</div>
+      </section>
 
-    <section id="execution-panel" class="execution-panel" hidden>
-      <strong id="execution-title">Estado</strong>
-      <pre id="execution-log"></pre>
-    </section>
+      <section class="settings-panel" id="settings-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Preferencias</p>
+            <h2>Configuración de búsqueda</h2>
+          </div>
+          <button class="icon-button" id="close-settings" type="button" aria-label="Cerrar configuración">×</button>
+        </div>
 
-    <section class="summary" id="summary"></section>
-    <section class="filters-panel">
-      <div><label>Filtrar resultados</label><input id="text-filter" type="search" placeholder="Zona, título, portal…"></div>
-      <div><label>Ordenar</label><select id="sort"><option value="score">Mejor estado</option><option value="price-asc">Menor precio</option><option value="price-desc">Mayor precio</option><option value="recent">Más recientes</option></select></div>
-    </section>
-    <section id="results" class="results"></section>
-  </main>
+        <div class="form-grid">
+          <div class="field full">
+            <label for="zones">Zonas</label>
+            <input id="zones" placeholder="Ramos Mejía, Haedo, Castelar">
+            <small>Separalas con comas.</small>
+          </div>
+          <div class="field">
+            <label for="min-rooms">Ambientes mínimos</label>
+            <input id="min-rooms" type="number" min="1">
+          </div>
+          <div class="field">
+            <label for="max-rooms">Ambientes máximos</label>
+            <input id="max-rooms" type="number" min="1">
+          </div>
+          <div class="field">
+            <label for="max-price">Precio máximo</label>
+            <div class="input-prefix"><span>$</span><input id="max-price" type="number" min="0"></div>
+          </div>
+          <div class="field">
+            <label for="min-area">Superficie mínima</label>
+            <div class="input-suffix"><input id="min-area" type="number" min="0"><span>m²</span></div>
+          </div>
+        </div>
+
+        <div class="portal-section">
+          <span class="group-label">Portales</span>
+          <div class="portal-options">
+            <label class="check-card"><input id="portal-zonaprop" type="checkbox"><span><strong>Zonaprop</strong><small>Buscar publicaciones activas</small></span></label>
+            <label class="check-card"><input id="portal-argenprop" type="checkbox"><span><strong>Argenprop</strong><small>Buscar publicaciones activas</small></span></label>
+            <label class="check-card"><input id="visible-browser" type="checkbox"><span><strong>Mostrar navegador</strong><small>Útil para validaciones o captcha</small></span></label>
+          </div>
+        </div>
+
+        <div class="settings-actions">
+          <span id="save-message" class="save-message"></span>
+          <button class="button secondary" id="save-config" type="button">Guardar cambios</button>
+        </div>
+      </section>
+
+      <section id="execution-panel" class="execution-panel" hidden>
+        <div class="execution-heading">
+          <div class="spinner"></div>
+          <strong id="execution-title">Estado</strong>
+        </div>
+        <pre id="execution-log"></pre>
+      </section>
+
+      <section class="summary" id="summary"></section>
+
+      <section class="results-toolbar">
+        <div class="search-field">
+          <span>⌕</span>
+          <input id="text-filter" type="search" placeholder="Buscar por zona, título o portal">
+        </div>
+        <select id="sort" aria-label="Ordenar resultados">
+          <option value="score">Mejor estado</option>
+          <option value="price-asc">Menor precio</option>
+          <option value="price-desc">Mayor precio</option>
+          <option value="recent">Más recientes</option>
+        </select>
+      </section>
+
+      <section id="results" class="results"></section>
+    </main>
+  </div>
   <script src="app.js"></script>
 </body>
 </html>
