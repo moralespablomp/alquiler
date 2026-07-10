@@ -2,6 +2,7 @@ const state = { properties: [], filtered: [], config: { filters: {}, portals: {}
 
 const money = (value, currency = "ARS") => value == null ? "Precio no informado" : new Intl.NumberFormat("es-AR", { style: "currency", currency, maximumFractionDigits: 0 }).format(value);
 const valueOrDash = (value, suffix = "") => value == null ? "—" : `${value}${suffix}`;
+const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
 
 function renderSummary(payload) {
   const filters = payload.filters || {};
@@ -11,15 +12,33 @@ function renderSummary(payload) {
     <article><strong>${money(filters.max_price)}</strong><span>precio máximo</span></article>`;
 }
 
+function gallery(property) {
+  const images = [...new Set([...(property.images || []), property.image].filter(Boolean))].slice(0, 8);
+  if (!images.length) return `<div class="image-placeholder">Sin imagen</div>`;
+  const slides = images.map((url, index) => `<img src="${escapeHtml(url)}" alt="Foto ${index + 1} de ${escapeHtml(property.title)}" loading="lazy" onerror="this.remove()">`).join("");
+  return `<div class="gallery" tabindex="0">${slides}${images.length > 1 ? `<span class="photo-count">${images.length} fotos</span>` : ""}</div>`;
+}
+
 function card(p) {
-  const image = p.image ? `<img src="${p.image}" alt="" loading="lazy" onerror="this.remove()">` : `<div class="image-placeholder">Sin imagen</div>`;
-  const parking = p.parking === true ? "Sí" : p.parking === false ? "No" : "—";
-  return `<article class="property-card">${image}<div class="property-content">
-    <div class="property-heading"><div><p class="source">${p.source}</p><h2>${p.title}</h2><p class="location">${p.location || "Ubicación no informada"}</p></div><span class="score">${p.condition_score}/100</span></div>
-    <p class="price">${money(p.price, p.currency)}</p>
-    <dl><div><dt>Ambientes</dt><dd>${valueOrDash(p.rooms)}</dd></div><div><dt>Superficie</dt><dd>${valueOrDash(p.area_m2, " m²")}</dd></div><div><dt>Cochera</dt><dd>${parking}</dd></div><div><dt>Antigüedad</dt><dd>${valueOrDash(p.age_years, " años")}</dd></div></dl>
-    <p class="condition">${p.condition_label}</p><p class="description">${p.description || "Sin descripción disponible."}</p>
-    <a class="button secondary" href="${p.url}" target="_blank" rel="noopener noreferrer">Ver publicación</a></div></article>`;
+  const parking = p.parking === true ? "Cochera" : "";
+  const facts = [
+    p.rooms != null ? `${p.rooms} amb.` : "",
+    p.area_m2 != null ? `${p.area_m2} m²` : "",
+    parking,
+    p.age_years != null ? `${p.age_years} años` : "",
+  ].filter(Boolean);
+
+  return `<article class="property-card">
+    ${gallery(p)}
+    <div class="property-content">
+      <div class="card-topline"><span class="source">${escapeHtml(p.source)}</span><span class="score">${p.condition_score}/100</span></div>
+      <p class="price">${money(p.price, p.currency)}</p>
+      <h2 title="${escapeHtml(p.title)}">${escapeHtml(p.title)}</h2>
+      <p class="location">${escapeHtml(p.location || "Ubicación no informada")}</p>
+      <div class="facts">${facts.map(fact => `<span>${escapeHtml(fact)}</span>`).join("") || "<span>Sin datos adicionales</span>"}</div>
+      <div class="card-footer"><span class="condition">${escapeHtml(p.condition_label)}</span><a class="button compact" href="${escapeHtml(p.url)}" target="_blank" rel="noopener noreferrer">Ver aviso</a></div>
+    </div>
+  </article>`;
 }
 
 function render() {
@@ -54,8 +73,8 @@ async function loadConfig() {
   document.querySelector("#max-rooms").value = f.max_rooms ?? 4;
   document.querySelector("#max-price").value = f.max_price ?? 0;
   document.querySelector("#min-area").value = f.min_area_m2 ?? 0;
-  document.querySelector("#portal-zonaprop").checked = !!state.config.portals?.zonaprop;
-  document.querySelector("#portal-argenprop").checked = !!state.config.portals?.argenprop;
+  document.querySelector("#portal-zonaprop").checked = state.config.portals?.zonaprop !== false;
+  document.querySelector("#portal-argenprop").checked = state.config.portals?.argenprop !== false;
   document.querySelector("#visible-browser").checked = !state.config.browser?.headless;
 }
 
