@@ -46,6 +46,7 @@ class Property:
     condition_score: int
     condition_label: str
     image: str | None
+    images: list[str]
     found_at: str
 
 
@@ -83,6 +84,17 @@ def condition(text: str) -> tuple[int, str]:
     return score, label
 
 
+def normalized_images(raw: dict[str, Any]) -> list[str]:
+    values = raw.get("images") if isinstance(raw.get("images"), list) else []
+    primary = clean(raw.get("image"))
+    result: list[str] = []
+    for value in [primary, *values]:
+        url = clean(value)
+        if url and url.startswith("http") and url not in result:
+            result.append(url)
+    return result[:12]
+
+
 def normalize(raw: dict[str, Any]) -> Property:
     title = clean(raw.get("title")) or "Propiedad sin título"
     description = clean(raw.get("description"))
@@ -94,6 +106,7 @@ def normalize(raw: dict[str, Any]) -> Property:
     property_type = next((p for p in ("departamento", "ph", "casa", "duplex", "monoambiente") if re.search(rf"\b{p}\b", lower)), None)
     parking = False if "sin cochera" in lower else True if any(x in lower for x in ("cochera", "garage", "garaje")) else None
     url = clean(raw.get("url"))
+    images = normalized_images(raw)
     return Property(
         id=hashlib.sha256(f"{raw.get('source')}|{url}|{title}".encode()).hexdigest()[:16],
         source=clean(raw.get("source")), title=title, url=url, price=price, expenses=None, currency=currency,
@@ -101,7 +114,7 @@ def normalize(raw: dict[str, Any]) -> Property:
         rooms=infer(r"(\d+(?:[.,]5)?)\s*(?:ambientes?|amb\b)", combined),
         area_m2=infer(r"(\d+(?:[.,]\d+)?)\s*m(?:²|2|ts?2)", combined),
         parking=parking, age_years=infer(r"(\d+)\s*(?:años?|anos?)\s*(?:de\s*)?antig", combined, int),
-        condition_score=score, condition_label=label, image=clean(raw.get("image")) or None,
+        condition_score=score, condition_label=label, image=images[0] if images else None, images=images,
         found_at=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -130,7 +143,12 @@ def save(items: list[Property], filters: dict[str, Any]) -> None:
     with RESULTS_CSV.open("w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()
-        writer.writerows(asdict(x) for x in ordered)
+        rows = []
+        for item in ordered:
+            row = asdict(item)
+            row["images"] = " | ".join(item.images)
+            rows.append(row)
+        writer.writerows(rows)
 
 
 def main() -> None:
