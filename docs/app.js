@@ -58,7 +58,7 @@ function card(property) {
 function render() {
   const container = document.querySelector("#results");
   if (!state.filtered.length) {
-    container.innerHTML = `<div class="empty"><h2>No hay resultados</h2><p>Revisá las fuentes y filtros en <code>config/searches.json</code>, y luego ejecutá el workflow.</p></div>`;
+    container.innerHTML = `<div class="empty"><h2>No hay resultados</h2><p>Revisá las fuentes y filtros en <code>config/searches.json</code>, y luego ejecutá una búsqueda.</p></div>`;
     return;
   }
   container.innerHTML = state.filtered.map(card).join("");
@@ -82,7 +82,7 @@ function applyControls() {
 
 async function load() {
   try {
-    const response = await fetch("../data/results.json", { cache: "no-store" });
+    const response = await fetch("/api/results", { cache: "no-store" });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const payload = await response.json();
     state.properties = payload.properties || [];
@@ -99,6 +99,48 @@ async function load() {
   }
 }
 
+async function pollStatus() {
+  const panel = document.querySelector("#execution-panel");
+  const title = document.querySelector("#execution-title");
+  const log = document.querySelector("#execution-log");
+  const button = document.querySelector("#run-search");
+
+  const response = await fetch("/api/status", { cache: "no-store" });
+  const status = await response.json();
+
+  panel.hidden = false;
+  log.textContent = status.log || "Sin mensajes todavía.";
+  button.disabled = status.running;
+  button.textContent = status.running ? "Buscando…" : "Ejecutar búsqueda";
+  title.textContent = status.running
+    ? "Ejecutando búsqueda…"
+    : status.last_success === true
+      ? "Búsqueda terminada"
+      : status.last_success === false
+        ? "La búsqueda terminó con errores"
+        : "Estado de ejecución";
+
+  if (status.running) {
+    window.setTimeout(pollStatus, 1200);
+  } else {
+    await load();
+  }
+}
+
+async function runSearch() {
+  const button = document.querySelector("#run-search");
+  button.disabled = true;
+  const response = await fetch("/api/run", { method: "POST" });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    alert(payload.error || "No se pudo iniciar la búsqueda.");
+    button.disabled = false;
+    return;
+  }
+  pollStatus();
+}
+
 document.querySelector("#text-filter").addEventListener("input", applyControls);
 document.querySelector("#sort").addEventListener("change", applyControls);
+document.querySelector("#run-search").addEventListener("click", runSearch);
 load();
