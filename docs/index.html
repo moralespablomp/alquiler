@@ -14,8 +14,16 @@
         <h1>Informe de alquileres</h1>
         <p id="status">Cargando resultados…</p>
       </div>
-      <a class="button" href="../data/results.csv">Descargar CSV</a>
+      <div class="hero-actions">
+        <button class="button" id="run-search" type="button">Ejecutar búsqueda</button>
+        <a class="button secondary" href="/api/results.csv">Descargar CSV</a>
+      </div>
     </header>
+
+    <section id="execution-panel" class="execution-panel" hidden>
+      <strong id="execution-title">Ejecutando búsqueda…</strong>
+      <pre id="execution-log"></pre>
+    </section>
 
     <section class="summary" id="summary"></section>
 
