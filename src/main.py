@@ -9,10 +9,10 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
 
-import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
+
+from .portals import PORTALS, open_context
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "searches.json"
@@ -20,35 +20,11 @@ DATA_DIR = ROOT / "data"
 RESULTS_JSON = DATA_DIR / "results.json"
 RESULTS_CSV = DATA_DIR / "results.csv"
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (compatible; AlquilerPersonal/1.0; "
-        "+https://github.com/moralespablomp/alquiler)"
-    )
-}
-TIMEOUT_SECONDS = 25
-
-POSITIVE_WORDS = {
-    "a estrenar": 25,
-    "reciclado": 20,
-    "refaccionado": 20,
-    "remodelado": 15,
-    "excelente estado": 15,
-    "impecable": 12,
-    "muy buen estado": 10,
-}
-NEGATIVE_WORDS = {
-    "a refaccionar": -45,
-    "estado original": -25,
-    "de época": -20,
-    "requiere mejoras": -35,
-    "con humedad": -50,
-    "para reciclar": -35,
-    "deteriorado": -50,
-}
-
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 LOGGER = logging.getLogger(__name__)
+
+POSITIVE = {"a estrenar": 25, "reciclado": 20, "refaccionado": 20, "remodelado": 15, "excelente estado": 15, "impecable": 12}
+NEGATIVE = {"a refaccionar": -45, "estado original": -25, "de época": -20, "requiere mejoras": -35, "con humedad": -50, "para reciclar": -35}
 
 
 @dataclass(slots=True)
@@ -74,335 +50,113 @@ class Property:
 
 
 def load_config() -> dict[str, Any]:
-    config_url = os.getenv("CONFIG_URL", "").strip()
-    if config_url:
-        response = requests.get(config_url, headers=HEADERS, timeout=TIMEOUT_SECONDS)
-        response.raise_for_status()
-        return response.json()
-    with CONFIG_PATH.open(encoding="utf-8") as file:
-        return json.load(file)
+    return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 
 
-def clean_text(value: Any) -> str:
-    if value is None:
-        return ""
-    return re.sub(r"\s+", " ", str(value)).strip()
+def clean(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def parse_number(text: str | None) -> float | None:
-    if not text:
-        return None
-    match = re.search(r"(\d[\d.]*)(?:[,](\d+))?", text.replace("\xa0", " "))
-    if not match:
-        return None
-    integer = match.group(1).replace(".", "")
-    decimal = match.group(2) or ""
-    try:
-        return float(f"{integer}.{decimal}" if decimal else integer)
-    except ValueError:
-        return None
+def number(text: str) -> float | None:
+    match = re.search(r"(\d[\d.]*)", text.replace("\xa0", " "))
+    return float(match.group(1).replace(".", "")) if match else None
 
 
-def parse_money(text: str | None) -> tuple[int | None, str]:
-    value = parse_number(text)
-    normalized = (text or "").lower()
-    currency = "USD" if "usd" in normalized or "u$s" in normalized else "ARS"
+def money(text: str, hinted: str = "") -> tuple[int | None, str]:
+    currency = "USD" if "usd" in (text + hinted).lower() or "us$" in text.lower() else "ARS"
+    value = number(text)
     return (round(value) if value is not None else None, currency)
 
 
-def infer_rooms(text: str) -> float | None:
-    match = re.search(r"(\d+(?:[.,]5)?)\s*(?:ambientes?|amb\b)", text, re.I)
-    return float(match.group(1).replace(",", ".")) if match else None
+def infer(pattern: str, text: str, cast=float):
+    match = re.search(pattern, text, re.I)
+    return cast(match.group(1).replace(",", ".")) if match else None
 
 
-def infer_area(text: str) -> float | None:
-    match = re.search(r"(\d+(?:[.,]\d+)?)\s*m(?:²|2|ts?2|etros? cuadrados?)", text, re.I)
-    return float(match.group(1).replace(",", ".")) if match else None
-
-
-def infer_age(text: str) -> int | None:
-    match = re.search(r"(\d+)\s*(?:años?|anos?)\s*(?:de\s*)?antig", text, re.I)
-    return int(match.group(1)) if match else None
-
-
-def infer_parking(text: str) -> bool | None:
-    normalized = text.lower()
-    if any(term in normalized for term in ("sin cochera", "no posee cochera")):
-        return False
-    if any(term in normalized for term in ("cochera", "garage", "garaje")):
-        return True
-    return None
-
-
-def infer_property_type(text: str) -> str | None:
-    normalized = text.lower()
-    for property_type in ("departamento", "ph", "casa", "duplex", "dúplex", "monoambiente"):
-        if re.search(rf"\b{re.escape(property_type)}\b", normalized):
-            return property_type.replace("dúplex", "duplex")
-    return None
-
-
-def evaluate_condition(text: str) -> tuple[int, str]:
-    normalized = text.lower()
+def condition(text: str) -> tuple[int, str]:
     score = 65
-    for phrase, points in POSITIVE_WORDS.items():
-        if phrase in normalized:
-            score += points
-    for phrase, points in NEGATIVE_WORDS.items():
-        if phrase in normalized:
-            score += points
+    lower = text.lower()
+    score += sum(points for phrase, points in POSITIVE.items() if phrase in lower)
+    score += sum(points for phrase, points in NEGATIVE.items() if phrase in lower)
     score = max(0, min(100, score))
-    if score >= 80:
-        label = "Muy buen estado"
-    elif score >= 60:
-        label = "Estado aceptable"
-    elif score >= 45:
-        label = "Revisar estado"
-    else:
-        label = "Posible mal estado"
+    label = "Muy buen estado" if score >= 80 else "Estado aceptable" if score >= 60 else "Revisar estado" if score >= 45 else "Posible mal estado"
     return score, label
 
 
-def make_id(source: str, url: str, title: str) -> str:
-    value = f"{source}|{url}|{title}".encode("utf-8")
-    return hashlib.sha256(value).hexdigest()[:16]
-
-
-def node_text(node: Any, selector: str | None) -> str:
-    if not selector:
-        return ""
-    selected = node.select_one(selector)
-    return clean_text(selected.get_text(" ", strip=True)) if selected else ""
-
-
-def node_attribute(node: Any, selector: str | None, attribute: str) -> str:
-    if not selector:
-        return ""
-    selected = node.select_one(selector)
-    return clean_text(selected.get(attribute)) if selected else ""
-
-
-def property_from_raw(source_name: str, raw: dict[str, Any], base_url: str) -> Property:
-    title = clean_text(raw.get("title")) or "Propiedad sin título"
-    description = clean_text(raw.get("description"))
-    features = clean_text(raw.get("features"))
-    combined = " ".join((title, description, features))
-    price, currency = parse_money(clean_text(raw.get("price")))
-    expenses, _ = parse_money(clean_text(raw.get("expenses")))
-    url = urljoin(base_url, clean_text(raw.get("url")))
-    condition_score, condition_label = evaluate_condition(combined)
-
+def normalize(raw: dict[str, Any]) -> Property:
+    title = clean(raw.get("title")) or "Propiedad sin título"
+    description = clean(raw.get("description"))
+    location = clean(raw.get("location"))
+    combined = f"{title} {description} {location}"
+    price, currency = money(clean(raw.get("price")), clean(raw.get("currency")))
+    score, label = condition(combined)
+    lower = combined.lower()
+    property_type = next((p for p in ("departamento", "ph", "casa", "duplex", "monoambiente") if re.search(rf"\b{p}\b", lower)), None)
+    parking = False if "sin cochera" in lower else True if any(x in lower for x in ("cochera", "garage", "garaje")) else None
+    url = clean(raw.get("url"))
     return Property(
-        id=make_id(source_name, url, title),
-        source=source_name,
-        title=title,
-        url=url,
-        price=price,
-        expenses=expenses,
-        currency=currency,
-        location=clean_text(raw.get("location")),
-        description=description,
-        property_type=infer_property_type(combined),
-        rooms=infer_rooms(combined),
-        area_m2=infer_area(combined),
-        parking=infer_parking(combined),
-        age_years=infer_age(combined),
-        condition_score=condition_score,
-        condition_label=condition_label,
-        image=urljoin(base_url, clean_text(raw.get("image"))) or None,
+        id=hashlib.sha256(f"{raw.get('source')}|{url}|{title}".encode()).hexdigest()[:16],
+        source=clean(raw.get("source")), title=title, url=url, price=price, expenses=None, currency=currency,
+        location=location, description=description, property_type=property_type,
+        rooms=infer(r"(\d+(?:[.,]5)?)\s*(?:ambientes?|amb\b)", combined),
+        area_m2=infer(r"(\d+(?:[.,]\d+)?)\s*m(?:²|2|ts?2)", combined),
+        parking=parking, age_years=infer(r"(\d+)\s*(?:años?|anos?)\s*(?:de\s*)?antig", combined, int),
+        condition_score=score, condition_label=label, image=clean(raw.get("image")) or None,
         found_at=datetime.now(timezone.utc).isoformat(),
     )
 
 
-def extract_with_selectors(soup: BeautifulSoup, source: dict[str, Any], page_url: str) -> list[Property]:
-    selectors = source.get("selectors", {})
-    card_selector = selectors.get("card")
-    if not card_selector:
-        return []
-
-    properties: list[Property] = []
-    for card in soup.select(card_selector):
-        raw = {
-            "title": node_text(card, selectors.get("title")),
-            "url": node_attribute(card, selectors.get("url"), "href"),
-            "price": node_text(card, selectors.get("price")),
-            "expenses": node_text(card, selectors.get("expenses")),
-            "location": node_text(card, selectors.get("location")),
-            "description": node_text(card, selectors.get("description")),
-            "features": node_text(card, selectors.get("features")),
-            "image": node_attribute(card, selectors.get("image"), "src"),
-        }
-        if raw["title"] or raw["url"]:
-            properties.append(property_from_raw(source["name"], raw, page_url))
-    return properties
-
-
-def walk_jsonld(value: Any) -> list[dict[str, Any]]:
-    found: list[dict[str, Any]] = []
-    if isinstance(value, list):
-        for item in value:
-            found.extend(walk_jsonld(item))
-    elif isinstance(value, dict):
-        item_type = value.get("@type")
-        types = item_type if isinstance(item_type, list) else [item_type]
-        accepted = {"Apartment", "House", "SingleFamilyResidence", "Residence", "Product", "Offer"}
-        if any(item in accepted for item in types):
-            found.append(value)
-        for key in ("@graph", "itemListElement", "item"):
-            if key in value:
-                found.extend(walk_jsonld(value[key]))
-    return found
-
-
-def extract_jsonld(soup: BeautifulSoup, source_name: str, page_url: str) -> list[Property]:
-    properties: list[Property] = []
-    for script in soup.select('script[type="application/ld+json"]'):
-        try:
-            payload = json.loads(script.string or "")
-        except (json.JSONDecodeError, TypeError):
-            continue
-        for item in walk_jsonld(payload):
-            offers = item.get("offers", {}) if isinstance(item.get("offers"), dict) else {}
-            address = item.get("address", {}) if isinstance(item.get("address"), dict) else {}
-            image = item.get("image")
-            if isinstance(image, list):
-                image = image[0] if image else ""
-            raw = {
-                "title": item.get("name"),
-                "url": item.get("url") or offers.get("url"),
-                "price": offers.get("price") or item.get("price"),
-                "location": address.get("addressLocality") or address.get("streetAddress"),
-                "description": item.get("description"),
-                "image": image,
-            }
-            if raw["title"] or raw["url"]:
-                properties.append(property_from_raw(source_name, raw, page_url))
-    return properties
-
-
-def fetch_source(source: dict[str, Any]) -> list[Property]:
-    results: list[Property] = []
-    zones = source.get("_zones", [])
-    for start_url in source.get("start_urls", []):
-        LOGGER.info("Descubriendo publicaciones en %s: %s", source["name"], start_url)
-        try:
-            urls = discover_listing_urls(start_url, HEADERS, TIMEOUT_SECONDS, zones)
-        except requests.RequestException as error:
-            LOGGER.warning("No se pudo explorar %s: %s", start_url, error)
-            continue
-
-        for url in urls:
-            try:
-                response = requests.get(url, headers=HEADERS, timeout=TIMEOUT_SECONDS)
-                response.raise_for_status()
-            except requests.RequestException as error:
-                LOGGER.warning("No se pudo consultar %s: %s", url, error)
-                continue
-
-            soup = BeautifulSoup(response.text, "html.parser")
-            extracted = extract_with_selectors(soup, source, url)
-            if not extracted:
-                extracted = extract_jsonld(soup, source["name"], url)
-            if not extracted and soup.title:
-                raw = {
-                    "title": clean_text(soup.select_one("h1").get_text(" ", strip=True) if soup.select_one("h1") else soup.title.get_text(" ", strip=True)),
-                    "url": url,
-                    "price": clean_text(soup.get_text(" ", strip=True)),
-                    "description": clean_text(soup.get_text(" ", strip=True))[:6000],
-                    "image": (soup.select_one('meta[property="og:image"]') or {}).get("content", ""),
-                }
-                candidate = property_from_raw(source["name"], raw, url)
-                if candidate.price or candidate.rooms or candidate.area_m2:
-                    extracted = [candidate]
-            results.extend(extracted)
-        LOGGER.info("Se encontraron %s publicaciones acumuladas", len(results))
-    return results
-
-
-def matches_filters(item: Property, filters: dict[str, Any]) -> bool:
-    searchable = f"{item.title} {item.location} {item.description}".lower()
-    zones = [zone.lower() for zone in filters.get("zones", [])]
-    if zones and not any(zone in searchable for zone in zones):
-        return False
-
-    allowed_types = [value.lower() for value in filters.get("property_types", [])]
-    if allowed_types and item.property_type and item.property_type.lower() not in allowed_types:
-        return False
-
-    if item.rooms is not None:
-        if item.rooms < filters.get("min_rooms", 0):
-            return False
-        if item.rooms > filters.get("max_rooms", float("inf")):
-            return False
-
-    if item.price is not None and item.currency == "ARS" and item.price > filters.get("max_price", float("inf")):
-        return False
-    if item.expenses is not None and item.expenses > filters.get("max_expenses", float("inf")):
-        return False
-    if item.area_m2 is not None and item.area_m2 < filters.get("min_area_m2", 0):
-        return False
-    if filters.get("parking_required") and item.parking is not True:
-        return False
-    if item.age_years is not None and item.age_years > filters.get("max_age_years", float("inf")):
-        return False
-    if item.condition_score < filters.get("exclude_condition_score_below", 0):
-        return False
-
-    excluded_words = [word.lower() for word in filters.get("excluded_words", [])]
-    if any(word in searchable for word in excluded_words):
-        return False
+def matches(item: Property, filters: dict[str, Any]) -> bool:
+    text = f"{item.title} {item.location} {item.description}".lower()
+    zones = [z.lower() for z in filters.get("zones", [])]
+    if zones and not any(z in text for z in zones): return False
+    if item.rooms is not None and not (filters.get("min_rooms", 0) <= item.rooms <= filters.get("max_rooms", 99)): return False
+    if item.price is not None and item.currency == "ARS" and item.price > filters.get("max_price", 10**15): return False
+    if item.area_m2 is not None and item.area_m2 < filters.get("min_area_m2", 0): return False
+    if filters.get("parking_required") and item.parking is not True: return False
+    if item.age_years is not None and item.age_years > filters.get("max_age_years", 999): return False
+    if item.condition_score < filters.get("exclude_condition_score_below", 0): return False
+    if any(word.lower() in text for word in filters.get("excluded_words", [])): return False
     return True
 
 
-def deduplicate(properties: list[Property]) -> list[Property]:
-    unique: dict[str, Property] = {}
-    for item in properties:
-        key = item.url or f"{item.title.lower()}|{item.price}|{item.location.lower()}"
-        current = unique.get(key)
-        if current is None or item.condition_score > current.condition_score:
-            unique[key] = item
-    return list(unique.values())
-
-
-def save_results(properties: list[Property], filters: dict[str, Any]) -> None:
+def save(items: list[Property], filters: dict[str, Any]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    ordered = sorted(
-        properties,
-        key=lambda item: (item.condition_score, -(item.price or 10**15)),
-        reverse=True,
-    )
-    payload = {
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "total": len(ordered),
-        "filters": filters,
-        "properties": [asdict(item) for item in ordered],
-    }
+    unique = {item.url or item.id: item for item in items}
+    ordered = sorted(unique.values(), key=lambda x: (x.condition_score, -(x.price or 10**15)), reverse=True)
+    payload = {"generated_at": datetime.now(timezone.utc).isoformat(), "total": len(ordered), "filters": filters, "properties": [asdict(x) for x in ordered]}
     RESULTS_JSON.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    fields = list(asdict(ordered[0]).keys()) if ordered else [field.name for field in Property.__dataclass_fields__.values()]
-    with RESULTS_CSV.open("w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.DictWriter(file, fieldnames=fields)
+    fields = list(Property.__dataclass_fields__.keys())
+    with RESULTS_CSV.open("w", newline="", encoding="utf-8-sig") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()
-        writer.writerows(asdict(item) for item in ordered)
+        writer.writerows(asdict(x) for x in ordered)
 
 
 def main() -> None:
     config = load_config()
-    all_properties: list[Property] = []
-    enabled_sources = [source for source in config.get("sources", []) if source.get("enabled")]
-    zones = config.get("filters", {}).get("zones", [])
-    for source in enabled_sources:
-        source["_zones"] = zones
-
-    if not enabled_sources:
-        LOGGER.warning("No hay fuentes habilitadas. Editá config/searches.json para comenzar.")
-
-    for source in enabled_sources:
-        all_properties.extend(fetch_source(source))
-
-    filtered = [item for item in all_properties if matches_filters(item, config.get("filters", {}))]
-    filtered = deduplicate(filtered)
-    save_results(filtered, config.get("filters", {}))
+    filters = config.get("filters", {})
+    enabled = [key for key, active in config.get("portals", {}).items() if active and key in PORTALS]
+    if not enabled:
+        raise RuntimeError("No hay portales habilitados.")
+    raw_items: list[dict[str, Any]] = []
+    with sync_playwright() as playwright:
+        context = open_context(playwright, bool(config.get("browser", {}).get("headless", False)))
+        page = context.new_page()
+        for key in enabled:
+            portal = PORTALS[key]
+            for url in portal.search_urls(filters):
+                LOGGER.info("Consultando %s: %s", portal.label, url)
+                try:
+                    found = portal.extract(page, url)
+                    LOGGER.info("%s devolvió %s publicaciones", portal.label, len(found))
+                    raw_items.extend(found)
+                except Exception as error:
+                    LOGGER.warning("No se pudo consultar %s: %s", portal.label, error)
+        context.close()
+    items = [normalize(raw) for raw in raw_items]
+    filtered = [item for item in items if matches(item, filters)]
+    save(filtered, filters)
     LOGGER.info("Informe generado con %s propiedades", len(filtered))
 
 
