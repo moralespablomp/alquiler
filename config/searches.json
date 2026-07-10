@@ -18,22 +18,11 @@
       "con humedad"
     ]
   },
-  "sources": [
-    {
-      "name": "Fuente de ejemplo",
-      "enabled": false,
-      "start_urls": ["https://ejemplo.com/alquileres"],
-      "selectors": {
-        "card": ".property-card",
-        "title": ".property-title",
-        "url": "a",
-        "price": ".property-price",
-        "expenses": ".property-expenses",
-        "location": ".property-location",
-        "description": ".property-description",
-        "features": ".property-features",
-        "image": "img"
-      }
-    }
-  ]
+  "portals": {
+    "zonaprop": true,
+    "argenprop": false
+  },
+  "browser": {
+    "headless": false
+  }
 }
