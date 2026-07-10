@@ -74,6 +74,11 @@ class Property:
 
 
 def load_config() -> dict[str, Any]:
+    config_url = os.getenv("CONFIG_URL", "").strip()
+    if config_url:
+        response = requests.get(config_url, headers=HEADERS, timeout=TIMEOUT_SECONDS)
+        response.raise_for_status()
+        return response.json()
     with CONFIG_PATH.open(encoding="utf-8") as file:
         return json.load(file)
 
@@ -277,21 +282,40 @@ def extract_jsonld(soup: BeautifulSoup, source_name: str, page_url: str) -> list
 
 def fetch_source(source: dict[str, Any]) -> list[Property]:
     results: list[Property] = []
-    for url in source.get("start_urls", []):
-        LOGGER.info("Consultando %s: %s", source["name"], url)
+    zones = source.get("_zones", [])
+    for start_url in source.get("start_urls", []):
+        LOGGER.info("Descubriendo publicaciones en %s: %s", source["name"], start_url)
         try:
-            response = requests.get(url, headers=HEADERS, timeout=TIMEOUT_SECONDS)
-            response.raise_for_status()
+            urls = discover_listing_urls(start_url, HEADERS, TIMEOUT_SECONDS, zones)
         except requests.RequestException as error:
-            LOGGER.warning("No se pudo consultar %s: %s", url, error)
+            LOGGER.warning("No se pudo explorar %s: %s", start_url, error)
             continue
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        extracted = extract_with_selectors(soup, source, url)
-        if not extracted:
-            extracted = extract_jsonld(soup, source["name"], url)
-        LOGGER.info("Se encontraron %s publicaciones", len(extracted))
-        results.extend(extracted)
+        for url in urls:
+            try:
+                response = requests.get(url, headers=HEADERS, timeout=TIMEOUT_SECONDS)
+                response.raise_for_status()
+            except requests.RequestException as error:
+                LOGGER.warning("No se pudo consultar %s: %s", url, error)
+                continue
+
+            soup = BeautifulSoup(response.text, "html.parser")
+            extracted = extract_with_selectors(soup, source, url)
+            if not extracted:
+                extracted = extract_jsonld(soup, source["name"], url)
+            if not extracted and soup.title:
+                raw = {
+                    "title": clean_text(soup.select_one("h1").get_text(" ", strip=True) if soup.select_one("h1") else soup.title.get_text(" ", strip=True)),
+                    "url": url,
+                    "price": clean_text(soup.get_text(" ", strip=True)),
+                    "description": clean_text(soup.get_text(" ", strip=True))[:6000],
+                    "image": (soup.select_one('meta[property="og:image"]') or {}).get("content", ""),
+                }
+                candidate = property_from_raw(source["name"], raw, url)
+                if candidate.price or candidate.rooms or candidate.area_m2:
+                    extracted = [candidate]
+            results.extend(extracted)
+        LOGGER.info("Se encontraron %s publicaciones acumuladas", len(results))
     return results
 
 
@@ -366,6 +390,9 @@ def main() -> None:
     config = load_config()
     all_properties: list[Property] = []
     enabled_sources = [source for source in config.get("sources", []) if source.get("enabled")]
+    zones = config.get("filters", {}).get("zones", [])
+    for source in enabled_sources:
+        source["_zones"] = zones
 
     if not enabled_sources:
         LOGGER.warning("No hay fuentes habilitadas. Editá config/searches.json para comenzar.")
