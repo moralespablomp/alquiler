@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Informe de alquileres</title>
+  <title>Buscador de alquileres</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -11,7 +11,7 @@
     <header class="hero">
       <div>
         <p class="eyebrow">Búsqueda personal</p>
-        <h1>Informe de alquileres</h1>
+        <h1>Buscador de alquileres</h1>
         <p id="status">Cargando resultados…</p>
       </div>
       <div class="hero-actions">
@@ -19,6 +19,38 @@
         <a class="button secondary" href="/api/results.csv">Descargar CSV</a>
       </div>
     </header>
+
+    <section class="config-panel">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Configuración</p>
+          <h2>Qué querés buscar</h2>
+        </div>
+        <button class="button secondary" id="save-config" type="button">Guardar configuración</button>
+      </div>
+
+      <div class="config-grid">
+        <label>Zonas, separadas por coma<input id="zones" type="text" placeholder="Ramos Mejía, Haedo, Castelar"></label>
+        <label>Tipos de propiedad<input id="property-types" type="text" placeholder="departamento, ph, casa"></label>
+        <label>Ambientes mínimos<input id="min-rooms" type="number" min="0" step="1"></label>
+        <label>Ambientes máximos<input id="max-rooms" type="number" min="0" step="1"></label>
+        <label>Precio máximo<input id="max-price" type="number" min="0" step="1000"></label>
+        <label>Expensas máximas<input id="max-expenses" type="number" min="0" step="1000"></label>
+        <label>Superficie mínima (m²)<input id="min-area" type="number" min="0" step="1"></label>
+        <label>Antigüedad máxima (años)<input id="max-age" type="number" min="0" step="1"></label>
+        <label class="checkbox-field"><input id="parking-required" type="checkbox"> Cochera obligatoria</label>
+      </div>
+
+      <div class="section-heading sources-heading">
+        <div>
+          <p class="eyebrow">Fuentes</p>
+          <h2>Inmobiliarias</h2>
+        </div>
+        <button class="button secondary" id="add-source" type="button">Agregar inmobiliaria</button>
+      </div>
+      <div id="sources" class="sources-list"></div>
+      <p id="config-message" class="form-message"></p>
+    </section>
 
     <section id="execution-panel" class="execution-panel" hidden>
       <strong id="execution-title">Ejecutando búsqueda…</strong>
