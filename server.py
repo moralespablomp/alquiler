@@ -7,7 +7,6 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 import requests
 from flask import Flask, jsonify, request, send_from_directory
@@ -26,6 +25,10 @@ HOSPITAL = {
     "lat": -34.6819,
     "lon": -58.5566,
 }
+INVALID_LOCATION_PHRASES = (
+    "choose all", "select all", "curtains", "captcha", "verify you are human",
+    "security check", "access denied", "cloudflare", "robot",
+)
 
 app = Flask(__name__, static_folder=str(DOCS_DIR), static_url_path="")
 _state: dict[str, Any] = {"running": False, "last_success": None, "last_error": None, "log": []}
@@ -104,8 +107,18 @@ def run_scraper() -> None:
             _state["running"] = False
 
 
+def valid_location(value: Any) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if not text or len(text) < 3 or len(text) > 220:
+        return ""
+    lower = text.lower()
+    if any(phrase in lower for phrase in INVALID_LOCATION_PHRASES):
+        return ""
+    return text
+
+
 def geocode(address: str) -> dict[str, Any] | None:
-    normalized = " ".join(address.split()).strip()
+    normalized = valid_location(address)
     if not normalized:
         return None
     cache = read_json(GEOCODE_CACHE, {})
@@ -222,29 +235,32 @@ def map_compare():
     payload = request.get_json(silent=True) or {}
     ids = set(payload.get("ids") or [])
     properties = read_json(RESULTS_JSON, {}).get("properties", [])
+    selected_items = [item for item in properties if not ids or item.get("id") in ids]
     compared = []
-    for item in properties:
-        if ids and item.get("id") not in ids:
-            continue
-        address = str(item.get("location") or "").strip()
+    for item in selected_items:
+        address = valid_location(item.get("location"))
+        base = {
+            "id": item.get("id"), "title": item.get("title") or "Propiedad sin título",
+            "url": item.get("url"), "price": item.get("price"), "currency": item.get("currency"),
+            "address": address or "Ubicación no disponible",
+        }
         if not address:
+            compared.append({**base, "error": "El aviso no publicó una ubicación utilizable."})
             continue
         query = address if "argentina" in address.lower() else f"{address}, Buenos Aires, Argentina"
         try:
             point = geocode(query)
             if not point:
-                compared.append({"id": item.get("id"), "error": "No se pudo ubicar", "address": address})
+                compared.append({**base, "error": "No se pudo ubicar con precisión."})
                 continue
             route = route_to_hospital(point["lat"], point["lon"])
             compared.append({
-                "id": item.get("id"), "title": item.get("title"), "url": item.get("url"),
-                "price": item.get("price"), "currency": item.get("currency"), "address": address,
-                "geocoded_address": point["display_name"], "lat": point["lat"], "lon": point["lon"],
+                **base, "geocoded_address": point["display_name"], "lat": point["lat"], "lon": point["lon"],
                 **(route or {}),
             })
         except Exception as error:
-            compared.append({"id": item.get("id"), "error": str(error), "address": address})
-    return jsonify({"hospital": HOSPITAL, "properties": compared})
+            compared.append({**base, "error": str(error)})
+    return jsonify({"hospital": HOSPITAL, "properties": compared, "selected_count": len(selected_items)})
 
 
 @app.get("/<path:path>")
