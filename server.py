@@ -212,10 +212,12 @@ def get_selections():
 def save_selection(property_id: str):
     payload = request.get_json(silent=True) or {}
     selections = read_json(SELECTIONS_JSON, {})
+    current = selections.get(property_id, {})
     selections[property_id] = {
-        "selected": bool(payload.get("selected", True)),
-        "status": str(payload.get("status", "Para revisar"))[:60],
-        "notes": str(payload.get("notes", ""))[:4000],
+        "selected": bool(payload.get("selected", current.get("selected", True))),
+        "status": str(payload.get("status", current.get("status", "Para revisar")))[:60],
+        "notes": str(payload.get("notes", current.get("notes", "")))[:4000],
+        "map_address": valid_location(payload.get("map_address", current.get("map_address", ""))),
         "updated_at": time.time(),
     }
     write_json(SELECTIONS_JSON, selections)
@@ -235,23 +237,25 @@ def map_compare():
     payload = request.get_json(silent=True) or {}
     ids = set(payload.get("ids") or [])
     properties = read_json(RESULTS_JSON, {}).get("properties", [])
-    selected_items = [item for item in properties if not ids or item.get("id") in ids]
+    selections = read_json(SELECTIONS_JSON, {})
+    selected_items = [item for item in properties if item.get("id") in ids]
     compared = []
     for item in selected_items:
-        address = valid_location(item.get("location"))
+        saved = selections.get(item.get("id"), {})
+        address = valid_location(saved.get("map_address"))
         base = {
             "id": item.get("id"), "title": item.get("title") or "Propiedad sin título",
             "url": item.get("url"), "price": item.get("price"), "currency": item.get("currency"),
-            "address": address or "Ubicación no disponible",
+            "address": address, "image": item.get("image"),
         }
         if not address:
-            compared.append({**base, "error": "El aviso no publicó una ubicación utilizable."})
+            compared.append({**base, "error": "Ingresá una dirección manual para ubicar esta propiedad."})
             continue
         query = address if "argentina" in address.lower() else f"{address}, Buenos Aires, Argentina"
         try:
             point = geocode(query)
             if not point:
-                compared.append({**base, "error": "No se pudo ubicar con precisión."})
+                compared.append({**base, "error": "No se encontró esa dirección. Revisá calle, altura y localidad."})
                 continue
             route = route_to_hospital(point["lat"], point["lon"])
             compared.append({
