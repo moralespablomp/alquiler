@@ -34,7 +34,8 @@ class PortalDefinition:
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(3500)
         html = page.content()
-        return extract_jsonld(html, self.label, url) or extract_cards(html, self.label, url)
+        results = extract_jsonld(html, self.label, url) or extract_cards(html, self.label, url)
+        return enrich_from_detail_pages(page, results, self.label)
 
 
 class ZonapropPortal(PortalDefinition):
@@ -103,13 +104,36 @@ def _walk(value: Any) -> list[dict[str, Any]]:
     elif isinstance(value, dict):
         item_type = value.get("@type")
         types = item_type if isinstance(item_type, list) else [item_type]
-        accepted = {"Apartment", "House", "Residence", "Product", "Offer", "RealEstateListing", "ListItem"}
+        accepted = {
+            "Apartment", "House", "Residence", "Product", "Offer",
+            "RealEstateListing", "ListItem", "Place", "Accommodation",
+        }
         if any(item in accepted for item in types):
             found.append(value)
         for child in value.values():
             if isinstance(child, (list, dict)):
                 found.extend(_walk(child))
     return found
+
+
+def format_address(value: Any) -> str:
+    if isinstance(value, str):
+        return _text(value)
+    if not isinstance(value, dict):
+        return ""
+    ordered = [
+        value.get("streetAddress"),
+        value.get("addressLocality"),
+        value.get("addressRegion"),
+        value.get("postalCode"),
+        value.get("addressCountry"),
+    ]
+    parts: list[str] = []
+    for item in ordered:
+        text = _text(item)
+        if text and text not in parts:
+            parts.append(text)
+    return ", ".join(parts)
 
 
 def extract_jsonld(html: str, source: str, page_url: str) -> list[dict[str, Any]]:
@@ -124,7 +148,8 @@ def extract_jsonld(html: str, source: str, page_url: str) -> list[dict[str, Any]
         for item in _walk(payload):
             nested = item.get("item") if isinstance(item.get("item"), dict) else item
             offers = nested.get("offers") if isinstance(nested.get("offers"), dict) else {}
-            address = nested.get("address") if isinstance(nested.get("address"), dict) else {}
+            address = nested.get("address") or item.get("address")
+            geo = nested.get("geo") if isinstance(nested.get("geo"), dict) else {}
             images = _image_urls(nested.get("image") or item.get("image"), page_url)
             url = nested.get("url") or offers.get("url") or item.get("url")
             title = nested.get("name") or item.get("name")
@@ -140,7 +165,9 @@ def extract_jsonld(html: str, source: str, page_url: str) -> list[dict[str, Any]
                 "url": absolute,
                 "price": _text(offers.get("price") or nested.get("price")),
                 "currency": _text(offers.get("priceCurrency")),
-                "location": _text(address),
+                "location": format_address(address),
+                "latitude": _text(geo.get("latitude")),
+                "longitude": _text(geo.get("longitude")),
                 "description": _text(nested.get("description")),
                 "image": images[0] if images else "",
                 "images": images,
@@ -152,19 +179,13 @@ def extract_cards(html: str, source: str, page_url: str) -> list[dict[str, Any]]
     soup = BeautifulSoup(html, "html.parser")
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
-    selectors = [
-        "[data-posting-type]",
-        "[data-qa*='posting']",
-        "article",
-        ".listing__item",
-        ".card",
-    ]
+    selectors = ["[data-posting-type]", "[data-qa*='posting']", "article", ".listing__item", ".card"]
     cards = []
     for selector in selectors:
         cards = soup.select(selector)
         if len(cards) >= 2:
             break
-    for card in cards[:100]:
+    for card in cards[:60]:
         link = card.select_one("a[href]")
         if not link:
             continue
@@ -189,12 +210,107 @@ def extract_cards(html: str, source: str, page_url: str) -> list[dict[str, Any]]
             "url": url,
             "price": price_match.group(0) if price_match else "",
             "currency": "USD" if price_match and "US" in price_match.group(0).upper() else "ARS",
-            "location": text,
+            "location": "",
             "description": text,
             "image": images[0] if images else "",
             "images": images[:12],
         })
     return results
+
+
+def detail_location_from_jsonld(html: str) -> tuple[str, str, str, list[str]]:
+    soup = BeautifulSoup(html, "html.parser")
+    best_address = ""
+    latitude = ""
+    longitude = ""
+    images: list[str] = []
+    for script in soup.select('script[type="application/ld+json"]'):
+        try:
+            payload = json.loads(script.string or "")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for item in _walk(payload):
+            nested = item.get("item") if isinstance(item.get("item"), dict) else item
+            address = format_address(nested.get("address") or item.get("address"))
+            if len(address) > len(best_address):
+                best_address = address
+            geo = nested.get("geo") if isinstance(nested.get("geo"), dict) else {}
+            latitude = latitude or _text(geo.get("latitude"))
+            longitude = longitude or _text(geo.get("longitude"))
+            for image in _image_urls(nested.get("image") or item.get("image"), ""):
+                if image not in images:
+                    images.append(image)
+    return best_address, latitude, longitude, images[:12]
+
+
+def detail_location_from_dom(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    selectors = [
+        "[data-qa='POSTING_LOCATION']",
+        "[data-qa*='LOCATION']",
+        "[data-testid*='location']",
+        "[class*='location']",
+        "[class*='address']",
+        "[id*='location']",
+        "[id*='address']",
+    ]
+    candidates: list[str] = []
+    for selector in selectors:
+        for node in soup.select(selector)[:12]:
+            text = _text(node.get_text(" ", strip=True))
+            if 5 <= len(text) <= 180:
+                candidates.append(text)
+    meta_names = ["og:street-address", "place:location:address", "twitter:data1"]
+    for name in meta_names:
+        node = soup.select_one(f'meta[property="{name}"]') or soup.select_one(f'meta[name="{name}"]')
+        if node and node.get("content"):
+            candidates.append(_text(node.get("content")))
+    address_pattern = re.compile(
+        r"\b(?:calle|av\.?|avenida|ruta|presidente|pte\.?|general|gral\.?)?\s*"
+        r"[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚáéíóúÑñ.' -]{2,45}\s+\d{1,5}\b"
+    )
+    body_text = _text(soup.get_text(" ", strip=True))
+    candidates.extend(match.group(0) for match in address_pattern.finditer(body_text))
+    cleaned: list[str] = []
+    for candidate in candidates:
+        value = re.sub(r"\s+", " ", candidate).strip(" ,-|")
+        if value and value not in cleaned:
+            cleaned.append(value)
+    with_number = [item for item in cleaned if re.search(r"\d", item)]
+    return (with_number or cleaned or [""])[0]
+
+
+def enrich_from_detail_pages(page: Page, items: list[dict[str, Any]], source: str) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for index, item in enumerate(items[:40], start=1):
+        url = _text(item.get("url"))
+        if not url:
+            enriched.append(item)
+            continue
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=45000)
+            page.wait_for_timeout(1400)
+            html = page.content()
+            address, latitude, longitude, detail_images = detail_location_from_jsonld(html)
+            if not address:
+                address = detail_location_from_dom(html)
+            if address:
+                item["location"] = address
+            item["latitude"] = latitude or item.get("latitude", "")
+            item["longitude"] = longitude or item.get("longitude", "")
+            merged_images: list[str] = []
+            for image in [*(item.get("images") or []), *detail_images]:
+                absolute = urljoin(url, image)
+                if absolute.startswith("http") and absolute not in merged_images:
+                    merged_images.append(absolute)
+            item["images"] = merged_images[:12]
+            item["image"] = merged_images[0] if merged_images else item.get("image", "")
+        except Exception:
+            pass
+        enriched.append(item)
+        if index >= 40:
+            break
+    return enriched
 
 
 def open_context(playwright: Any, headless: bool) -> BrowserContext:
