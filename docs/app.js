@@ -6,6 +6,7 @@ const state = {
 const money = (value, currency = "ARS") => value == null ? "Precio no informado" : new Intl.NumberFormat("es-AR", { style: "currency", currency, maximumFractionDigits: 0 }).format(value);
 const escapeHtml = (value = "") => String(value).replace(/[&<>'"]/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
 const selectedIds = () => Object.entries(state.selections).filter(([, value]) => value.selected).map(([id]) => id);
+const getProperty = id => state.properties.find(item => item.id === id);
 
 function renderSummary(payload) {
   const filters = payload.filters || {};
@@ -50,6 +51,7 @@ function renderSaved() {
   const container = document.querySelector("#saved-results");
   if (!selected.length) {
     container.innerHTML = `<div class="empty"><h2>Todavía no guardaste propiedades</h2><p>Usá la estrella de cada tarjeta para agregarlas.</p></div>`;
+    renderManualAddresses();
     return;
   }
   container.innerHTML = selected.map(p => {
@@ -60,6 +62,7 @@ function renderSaved() {
         <div class="saved-heading"><div><span class="source">${escapeHtml(p.source)}</span><h3>${escapeHtml(p.title)}</h3><p>${escapeHtml(p.location || "Ubicación no informada")}</p></div><strong>${money(p.price, p.currency)}</strong></div>
         <div class="saved-fields">
           <label>Estado<select data-status="${p.id}"><option ${saved.status === "Para revisar" ? "selected" : ""}>Para revisar</option><option ${saved.status === "Contactar" ? "selected" : ""}>Contactar</option><option ${saved.status === "Visita coordinada" ? "selected" : ""}>Visita coordinada</option><option ${saved.status === "Finalista" ? "selected" : ""}>Finalista</option><option ${saved.status === "Descartado" ? "selected" : ""}>Descartado</option></select></label>
+          <label>Dirección para el mapa<input data-map-address="${p.id}" value="${escapeHtml(saved.map_address || "")}" placeholder="Ej.: Av. Rivadavia 14500, Ramos Mejía"></label>
           <label class="notes-field">Notas<textarea data-notes="${p.id}" placeholder="Expensas, impresión general, preguntas, fecha de visita…">${escapeHtml(saved.notes || "")}</textarea></label>
         </div>
         <div class="saved-actions"><span data-saved-message="${p.id}"></span><a class="button secondary compact" href="${escapeHtml(p.url)}" target="_blank">Abrir aviso</a><button class="button compact" data-save-note="${p.id}">Guardar cambios</button><button class="text-button danger-text" data-remove="${p.id}">Quitar</button></div>
@@ -68,26 +71,76 @@ function renderSaved() {
   }).join("");
   container.querySelectorAll("[data-save-note]").forEach(btn => btn.addEventListener("click", () => saveNotes(btn.dataset.saveNote)));
   container.querySelectorAll("[data-remove]").forEach(btn => btn.addEventListener("click", () => removeSelection(btn.dataset.remove)));
+  renderManualAddresses();
+}
+
+function renderManualAddresses() {
+  const ids = selectedIds();
+  const container = document.querySelector("#manual-address-list");
+  if (!container) return;
+  if (!ids.length) {
+    container.innerHTML = `<div class="empty compact-empty"><strong>No hay propiedades seleccionadas</strong><p>Marcá algunas con la estrella para compararlas.</p></div>`;
+    return;
+  }
+  container.innerHTML = ids.map((id, index) => {
+    const p = getProperty(id);
+    if (!p) return "";
+    const saved = state.selections[id] || {};
+    return `<article class="manual-address-item">
+      <div class="manual-address-number">${index + 1}</div>
+      <div class="manual-address-content">
+        <div class="manual-address-heading"><div><span class="source">${escapeHtml(p.source)}</span><strong>${escapeHtml(p.title)}</strong></div><span>${money(p.price, p.currency)}</span></div>
+        <div class="address-input-row"><input data-quick-address="${id}" value="${escapeHtml(saved.map_address || "")}" placeholder="Calle, altura y localidad"><button class="button secondary compact" data-save-address="${id}">Guardar</button></div>
+        <small>${saved.map_address ? "Dirección guardada" : "Ingresá una dirección exacta o una esquina"}</small>
+      </div>
+    </article>`;
+  }).join("");
+  container.querySelectorAll("[data-save-address]").forEach(btn => btn.addEventListener("click", () => saveQuickAddress(btn.dataset.saveAddress)));
+}
+
+async function persistSelection(id, overrides = {}) {
+  const current = state.selections[id] || {};
+  const payload = {
+    selected: true,
+    status: overrides.status ?? current.status ?? "Para revisar",
+    notes: overrides.notes ?? current.notes ?? "",
+    map_address: overrides.map_address ?? current.map_address ?? "",
+  };
+  const response = await fetch(`/api/selections/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || "No se pudo guardar");
+  state.selections[id] = result.selection;
 }
 
 async function toggleSelection(id) {
   const current = state.selections[id];
   if (current?.selected) return removeSelection(id);
-  const payload = { selected: true, status: current?.status || "Para revisar", notes: current?.notes || "" };
-  const response = await fetch(`/api/selections/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-  state.selections[id] = (await response.json()).selection;
+  await persistSelection(id);
   render(); renderSaved();
 }
 
 async function saveNotes(id) {
-  const status = document.querySelector(`[data-status="${id}"]`).value;
-  const notes = document.querySelector(`[data-notes="${id}"]`).value;
-  const response = await fetch(`/api/selections/${encodeURIComponent(id)}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ selected: true, status, notes }) });
-  state.selections[id] = (await response.json()).selection;
+  await persistSelection(id, {
+    status: document.querySelector(`[data-status="${id}"]`).value,
+    notes: document.querySelector(`[data-notes="${id}"]`).value,
+    map_address: document.querySelector(`[data-map-address="${id}"]`).value,
+  });
   const message = document.querySelector(`[data-saved-message="${id}"]`);
   message.textContent = "Guardado";
   setTimeout(() => message.textContent = "", 1600);
-  render();
+  render(); renderManualAddresses();
+}
+
+async function saveQuickAddress(id) {
+  const input = document.querySelector(`[data-quick-address="${id}"]`);
+  await persistSelection(id, { map_address: input.value.trim() });
+  renderSaved();
+  input?.focus();
+}
+
+async function saveAllQuickAddresses() {
+  const inputs = [...document.querySelectorAll("[data-quick-address]")];
+  await Promise.all(inputs.map(input => persistSelection(input.dataset.quickAddress, { map_address: input.value.trim() })));
 }
 
 async function removeSelection(id) {
@@ -105,8 +158,7 @@ function applyControls() {
 }
 
 async function loadResults() {
-  const response = await fetch("/api/results", { cache: "no-store" });
-  const payload = await response.json();
+  const payload = await (await fetch("/api/results", { cache: "no-store" })).json();
   state.properties = payload.properties || [];
   state.filtered = [...state.properties];
   renderSummary(payload);
@@ -163,34 +215,53 @@ async function runSearch() {
 
 function initMap() {
   if (state.map) return;
-  state.map = L.map("map").setView([-34.67, -58.58], 12);
-  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap" }).addTo(state.map);
+  state.map = L.map("map", { zoomControl: false }).setView([-34.67, -58.58], 12);
+  L.control.zoom({ position: "bottomright" }).addTo(state.map);
+  L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", { maxZoom: 20, attribution: "© OpenStreetMap © CARTO" }).addTo(state.map);
+}
+
+function markerIcon(number, hospital = false) {
+  return L.divIcon({
+    className: "custom-map-marker",
+    html: `<div class="map-pin ${hospital ? "hospital" : ""}">${hospital ? "H" : number}</div>`,
+    iconSize: [38, 46], iconAnchor: [19, 46], popupAnchor: [0, -42],
+  });
 }
 
 async function compareMap() {
-  initMap();
-  document.querySelector("#map-status").textContent = "Calculando ubicaciones y recorridos…";
   const ids = selectedIds();
-  const response = await fetch("/api/map/compare", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
-  const data = await response.json();
-  state.markers.forEach(marker => marker.remove()); state.markers = [];
-  const hospitalMarker = L.marker([data.hospital.lat, data.hospital.lon]).addTo(state.map).bindPopup(`<strong>${escapeHtml(data.hospital.name)}</strong><br>${escapeHtml(data.hospital.address)}`);
-  state.markers.push(hospitalMarker);
-  const valid = data.properties.filter(item => item.lat && item.lon);
-  valid.forEach((item, index) => {
-    const marker = L.marker([item.lat, item.lon]).addTo(state.map).bindPopup(`<strong>${index + 1}. ${escapeHtml(item.title)}</strong><br>${escapeHtml(item.address)}<br>${item.distance_km ?? "—"} km · ${item.duration_min ?? "—"} min`);
-    state.markers.push(marker);
-  });
-  if (state.markers.length) state.map.fitBounds(L.featureGroup(state.markers).getBounds().pad(0.18));
-  document.querySelector("#map-status").textContent = ids.length ? `${valid.length} de ${ids.length} seleccionadas ubicadas` : `${valid.length} propiedades ubicadas`;
-  document.querySelector("#comparison-list").innerHTML = data.properties.sort((a, b) => (a.duration_min ?? Infinity) - (b.duration_min ?? Infinity)).map((item, index) => item.error ? `<article class="comparison-item error"><strong>${escapeHtml(item.address)}</strong><span>No se pudo ubicar con precisión.</span></article>` : `<article class="comparison-item"><span class="rank">${index + 1}</span><div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.address)}</p><small>${money(item.price, item.currency)}</small></div><div class="trip"><strong>${item.duration_min} min</strong><span>${item.distance_km} km</span></div></article>`).join("");
-  setTimeout(() => state.map.invalidateSize(), 100);
+  if (!ids.length) {
+    document.querySelector("#map-status").textContent = "Seleccioná al menos una propiedad.";
+    return;
+  }
+  document.querySelector("#map-status").textContent = "Guardando direcciones y calculando recorridos…";
+  try {
+    await saveAllQuickAddresses();
+    initMap();
+    const response = await fetch("/api/map/compare", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids }) });
+    const data = await response.json();
+    state.markers.forEach(marker => marker.remove()); state.markers = [];
+    const hospitalMarker = L.marker([data.hospital.lat, data.hospital.lon], { icon: markerIcon("H", true) }).addTo(state.map).bindPopup(`<strong>${escapeHtml(data.hospital.name)}</strong><br>${escapeHtml(data.hospital.address)}`);
+    state.markers.push(hospitalMarker);
+    const valid = data.properties.filter(item => item.lat && item.lon);
+    valid.forEach((item, index) => {
+      const marker = L.marker([item.lat, item.lon], { icon: markerIcon(index + 1) }).addTo(state.map).bindPopup(`<strong>${index + 1}. ${escapeHtml(item.title)}</strong><br>${escapeHtml(item.address)}<br>${item.distance_km ?? "—"} km · ${item.duration_min ?? "—"} min`);
+      state.markers.push(marker);
+    });
+    if (state.markers.length) state.map.fitBounds(L.featureGroup(state.markers).getBounds().pad(0.22));
+    document.querySelector("#map-status").textContent = `${valid.length} de ${ids.length} seleccionadas ubicadas`;
+    const sorted = [...data.properties].sort((a, b) => (a.duration_min ?? Infinity) - (b.duration_min ?? Infinity));
+    document.querySelector("#comparison-list").innerHTML = sorted.map((item, index) => item.error ? `<article class="comparison-card error"><span class="rank">—</span><div><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.address || "Sin dirección")}</p><small>${escapeHtml(item.error)}</small></div></article>` : `<article class="comparison-card"><span class="rank">${index + 1}</span><div class="comparison-main"><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.address)}</p><small>${money(item.price, item.currency)}</small></div><div class="trip"><strong>${item.duration_min} min</strong><span>${item.distance_km} km</span></div></article>`).join("");
+    setTimeout(() => state.map.invalidateSize(), 100);
+  } catch (error) {
+    document.querySelector("#map-status").textContent = error.message;
+  }
 }
 
 function switchTab(id) {
   document.querySelectorAll(".tab").forEach(tab => tab.classList.toggle("active", tab.dataset.tab === id));
   document.querySelectorAll(".tab-view").forEach(view => view.classList.toggle("active", view.id === id));
-  if (id === "map-view") { initMap(); setTimeout(() => state.map.invalidateSize(), 100); }
+  if (id === "map-view") { initMap(); renderManualAddresses(); setTimeout(() => state.map.invalidateSize(), 100); }
 }
 
 document.querySelectorAll(".tab").forEach(tab => tab.addEventListener("click", () => switchTab(tab.dataset.tab)));
