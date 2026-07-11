@@ -47,6 +47,8 @@ class Property:
     condition_label: str
     image: str | None
     images: list[str]
+    latitude: float | None
+    longitude: float | None
     found_at: str
 
 
@@ -58,14 +60,43 @@ def clean(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def number(text: str) -> float | None:
-    match = re.search(r"(\d[\d.]*)", text.replace("\xa0", " "))
-    return float(match.group(1).replace(".", "")) if match else None
+def parse_numeric_value(text: str) -> float | None:
+    match = re.search(r"\d[\d.,]*", text.replace("\xa0", " "))
+    if not match:
+        return None
+    raw = match.group(0).strip(".,")
+    if not raw:
+        return None
+
+    # En avisos argentinos, un único separador seguido por tres dígitos suele ser miles.
+    if "." in raw and "," in raw:
+        if raw.rfind(",") > raw.rfind("."):
+            normalized = raw.replace(".", "").replace(",", ".")
+        else:
+            normalized = raw.replace(",", "")
+    elif raw.count(".") > 1:
+        normalized = raw.replace(".", "")
+    elif raw.count(",") > 1:
+        normalized = raw.replace(",", "")
+    elif "." in raw:
+        decimals = len(raw.split(".")[-1])
+        normalized = raw.replace(".", "") if decimals == 3 else raw
+    elif "," in raw:
+        decimals = len(raw.split(",")[-1])
+        normalized = raw.replace(",", "") if decimals == 3 else raw.replace(",", ".")
+    else:
+        normalized = raw
+
+    try:
+        return float(normalized)
+    except ValueError:
+        return None
 
 
 def money(text: str, hinted: str = "") -> tuple[int | None, str]:
-    currency = "USD" if "usd" in (text + hinted).lower() or "us$" in text.lower() else "ARS"
-    value = number(text)
+    combined = f"{text} {hinted}".lower()
+    currency = "USD" if any(token in combined for token in ("usd", "us$", "u$s", "u$ s", "dólar", "dolar")) else "ARS"
+    value = parse_numeric_value(text)
     return (round(value) if value is not None else None, currency)
 
 
@@ -95,12 +126,20 @@ def normalized_images(raw: dict[str, Any]) -> list[str]:
     return result[:12]
 
 
+def optional_float(value: Any) -> float | None:
+    try:
+        return float(str(value).replace(",", ".")) if str(value or "").strip() else None
+    except ValueError:
+        return None
+
+
 def normalize(raw: dict[str, Any]) -> Property:
     title = clean(raw.get("title")) or "Propiedad sin título"
     description = clean(raw.get("description"))
     location = clean(raw.get("location"))
     combined = f"{title} {description} {location}"
     price, currency = money(clean(raw.get("price")), clean(raw.get("currency")))
+    expenses, _ = money(clean(raw.get("expenses")), "ARS")
     score, label = condition(combined)
     lower = combined.lower()
     property_type = next((p for p in ("departamento", "ph", "casa", "duplex", "monoambiente") if re.search(rf"\b{p}\b", lower)), None)
@@ -109,12 +148,13 @@ def normalize(raw: dict[str, Any]) -> Property:
     images = normalized_images(raw)
     return Property(
         id=hashlib.sha256(f"{raw.get('source')}|{url}|{title}".encode()).hexdigest()[:16],
-        source=clean(raw.get("source")), title=title, url=url, price=price, expenses=None, currency=currency,
+        source=clean(raw.get("source")), title=title, url=url, price=price, expenses=expenses, currency=currency,
         location=location, description=description, property_type=property_type,
         rooms=infer(r"(\d+(?:[.,]5)?)\s*(?:ambientes?|amb\b)", combined),
         area_m2=infer(r"(\d+(?:[.,]\d+)?)\s*m(?:²|2|ts?2)", combined),
         parking=parking, age_years=infer(r"(\d+)\s*(?:años?|anos?)\s*(?:de\s*)?antig", combined, int),
-        condition_score=score, condition_label=label, image=images[0] if images else None, images=images,
+        condition_score=score, condition_label=label, image=images[0] if images else None,
+        images=images, latitude=optional_float(raw.get("latitude")), longitude=optional_float(raw.get("longitude")),
         found_at=datetime.now(timezone.utc).isoformat(),
     )
 
@@ -146,7 +186,7 @@ def save(items: list[Property], filters: dict[str, Any]) -> None:
         rows = []
         for item in ordered:
             row = asdict(item)
-            row["images"] = " | ".join(item.images)
+            row["images"] = " | ".join(row["images"])
             rows.append(row)
         writer.writerows(rows)
 
