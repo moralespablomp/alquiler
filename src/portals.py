@@ -32,9 +32,11 @@ class PortalDefinition:
 
     def extract(self, page: Page, url: str) -> list[dict[str, Any]]:
         page.goto(url, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(3500)
+        page.wait_for_timeout(4500)
         html = page.content()
-        results = extract_jsonld(html, self.label, url) or extract_cards(html, self.label, url)
+        results = extract_cards(html, self.label, url)
+        if not results:
+            results = extract_jsonld(html, self.label, url)
         return enrich_from_detail_pages(page, results, self.label)
 
 
@@ -85,7 +87,7 @@ def _image_urls(value: Any, base_url: str) -> list[str]:
         for item in value:
             candidates.extend(_image_urls(item, base_url))
     elif isinstance(value, dict):
-        for key in ("url", "contentUrl", "thumbnailUrl"):
+        for key in ("url", "contentUrl", "thumbnailUrl", "src"):
             if value.get(key):
                 candidates.extend(_image_urls(value[key], base_url))
     result: list[str] = []
@@ -102,14 +104,7 @@ def _walk(value: Any) -> list[dict[str, Any]]:
         for item in value:
             found.extend(_walk(item))
     elif isinstance(value, dict):
-        item_type = value.get("@type")
-        types = item_type if isinstance(item_type, list) else [item_type]
-        accepted = {
-            "Apartment", "House", "Residence", "Product", "Offer",
-            "RealEstateListing", "ListItem", "Place", "Accommodation",
-        }
-        if any(item in accepted for item in types):
-            found.append(value)
+        found.append(value)
         for child in value.values():
             if isinstance(child, (list, dict)):
                 found.extend(_walk(child))
@@ -122,8 +117,11 @@ def format_address(value: Any) -> str:
     if not isinstance(value, dict):
         return ""
     ordered = [
-        value.get("streetAddress"), value.get("addressLocality"),
-        value.get("addressRegion"), value.get("postalCode"), value.get("addressCountry"),
+        value.get("streetAddress"),
+        value.get("addressLocality"),
+        value.get("addressRegion"),
+        value.get("postalCode"),
+        value.get("addressCountry"),
     ]
     parts: list[str] = []
     for item in ordered:
@@ -131,6 +129,31 @@ def format_address(value: Any) -> str:
         if text and text not in parts:
             parts.append(text)
     return ", ".join(parts)
+
+
+def normalize_price_candidate(value: Any, currency_hint: Any = "") -> tuple[str, str]:
+    text = _text(value)
+    hint = _text(currency_hint)
+    if not text:
+        return "", hint
+    if re.fullmatch(r"\d+(?:[.,]\d+)*", text):
+        return text, hint
+    return find_price_text(f"{hint} {text}")
+
+
+def extract_price_from_mapping(mapping: dict[str, Any]) -> tuple[str, str]:
+    price_keys = (
+        "price", "amount", "value", "rentPrice", "formattedPrice",
+        "priceValue", "mainPrice", "operationPrice",
+    )
+    currency_keys = ("priceCurrency", "currency", "currencyCode", "currencyType")
+    currency = next((_text(mapping.get(k)) for k in currency_keys if mapping.get(k) is not None), "")
+    for key in price_keys:
+        if mapping.get(key) is not None:
+            price, detected = normalize_price_candidate(mapping.get(key), currency)
+            if price:
+                return price, currency or detected
+    return "", currency
 
 
 def extract_jsonld(html: str, source: str, page_url: str) -> list[dict[str, Any]]:
@@ -144,11 +167,7 @@ def extract_jsonld(html: str, source: str, page_url: str) -> list[dict[str, Any]
             continue
         for item in _walk(payload):
             nested = item.get("item") if isinstance(item.get("item"), dict) else item
-            offers = nested.get("offers") if isinstance(nested.get("offers"), dict) else {}
-            address = nested.get("address") or item.get("address")
-            geo = nested.get("geo") if isinstance(nested.get("geo"), dict) else {}
-            images = _image_urls(nested.get("image") or item.get("image"), page_url)
-            url = nested.get("url") or offers.get("url") or item.get("url")
+            url = nested.get("url") or item.get("url")
             title = nested.get("name") or item.get("name")
             if not url or not title:
                 continue
@@ -156,59 +175,114 @@ def extract_jsonld(html: str, source: str, page_url: str) -> list[dict[str, Any]
             if absolute in seen:
                 continue
             seen.add(absolute)
+            offers = nested.get("offers")
+            offer_maps = offers if isinstance(offers, list) else [offers] if isinstance(offers, dict) else []
+            price = ""
+            currency = ""
+            for offer in offer_maps:
+                price, currency = extract_price_from_mapping(offer)
+                if price:
+                    break
+            if not price:
+                price, currency = extract_price_from_mapping(nested)
+            address = nested.get("address") or item.get("address")
+            geo = nested.get("geo") if isinstance(nested.get("geo"), dict) else {}
+            images = _image_urls(nested.get("image") or item.get("image"), page_url)
             results.append({
-                "source": source, "title": _text(title), "url": absolute,
-                "price": _text(offers.get("price") or nested.get("price")),
-                "currency": _text(offers.get("priceCurrency")),
-                "expenses": "", "location": format_address(address),
-                "latitude": _text(geo.get("latitude")), "longitude": _text(geo.get("longitude")),
+                "source": source,
+                "title": _text(title),
+                "url": absolute,
+                "price": price,
+                "currency": currency,
+                "expenses": "",
+                "location": format_address(address),
+                "latitude": _text(geo.get("latitude")),
+                "longitude": _text(geo.get("longitude")),
                 "description": _text(nested.get("description")),
-                "image": images[0] if images else "", "images": images,
+                "image": images[0] if images else "",
+                "images": images,
             })
     return results
 
 
 def find_price_text(text: str) -> tuple[str, str]:
+    cleaned = _text(text)
     patterns = [
-        r"(?:U\s*\$\s*S|US\$|USD|U\$S)\s*[\d][\d.,]*",
-        r"(?:ARS|AR\$)\s*[\d][\d.,]*",
-        r"\$\s*[\d][\d.,]*",
+        r"\b(?:U\s*\$\s*S|US\$|USD|U\$S)\s*:?\s*([\d][\d.,]*)",
+        r"\b(?:ARS|AR\$)\s*:?\s*([\d][\d.,]*)",
+        r"(?<![A-Za-z])\$\s*([\d][\d.,]*)",
+        r'"(?:price|amount|rentPrice|priceValue|mainPrice)"\s*:\s*"?([\d][\d.,]*)"?',
     ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.I)
+    for index, pattern in enumerate(patterns):
+        match = re.search(pattern, cleaned, re.I)
         if match:
-            value = re.sub(r"\s+", "", match.group(0))
-            currency = "USD" if re.search(r"USD|US\$|U\$S|U\s*\$\s*S", value, re.I) else "ARS"
-            return value, currency
+            number = match.group(1)
+            currency = "USD" if index == 0 else "ARS"
+            if index == 3:
+                nearby = cleaned[max(0, match.start() - 100): match.end() + 100].lower()
+                currency = "USD" if any(token in nearby for token in ("usd", "us$", "u$s", "dolar", "dólar")) else "ARS"
+            return number, currency
     return "", ""
 
 
 def find_expenses_text(text: str) -> str:
-    match = re.search(r"(?:expensas?|gastos comunes?)\s*(?:aprox\.?|estimadas?)?\s*[:$]?\s*([\d][\d.,]*)", text, re.I)
-    return f"$ {match.group(1)}" if match else ""
+    match = re.search(
+        r"(?:expensas?|gastos comunes?)\s*(?:aprox\.?|estimadas?)?\s*[:$]?\s*([\d][\d.,]*)",
+        text,
+        re.I,
+    )
+    return match.group(1) if match else ""
+
+
+def _first_text(node: Any, selectors: list[str]) -> str:
+    for selector in selectors:
+        found = node.select_one(selector)
+        if found:
+            text = _text(found.get_text(" ", strip=True))
+            if text:
+                return text
+    return ""
 
 
 def extract_cards(html: str, source: str, page_url: str) -> list[dict[str, Any]]:
     soup = BeautifulSoup(html, "html.parser")
     results: list[dict[str, Any]] = []
     seen: set[str] = set()
-    selectors = ["[data-posting-type]", "[data-qa*='posting']", "article", ".listing__item", ".card"]
-    cards = []
+    selectors = [
+        "[data-qa='posting PROPERTY']",
+        "[data-posting-type]",
+        "[data-qa*='POSTING_CARD']",
+        "[data-qa*='posting']",
+        "article",
+        ".listing__item",
+        ".card",
+    ]
+    cards: list[Any] = []
     for selector in selectors:
-        cards = soup.select(selector)
-        if len(cards) >= 2:
+        found = soup.select(selector)
+        if len(found) >= 2:
+            cards = found
             break
     for card in cards[:60]:
-        link = card.select_one("a[href]")
+        links = card.select("a[href]")
+        link = next((a for a in links if "propiedad" in str(a.get("href", "")).lower() or "departamento" in str(a.get("href", "")).lower() or "casa" in str(a.get("href", "")).lower()), links[0] if links else None)
         if not link:
             continue
         url = urljoin(page_url, str(link.get("href", "")))
         if url in seen:
             continue
         text = _text(card.get_text(" ", strip=True))
-        if len(text) < 25:
+        if len(text) < 20:
             continue
         seen.add(url)
+        price_text = _first_text(card, [
+            "[data-qa='POSTING_CARD_PRICE']",
+            "[data-qa*='PRICE']",
+            "[data-testid*='price']",
+            "[class*='price']",
+            "[class*='Price']",
+        ])
+        price, currency = find_price_text(price_text or text)
         images: list[str] = []
         for image in card.select("img"):
             candidate = image.get("src") or image.get("data-src") or image.get("data-lazy-src")
@@ -216,12 +290,17 @@ def extract_cards(html: str, source: str, page_url: str) -> list[dict[str, Any]]
                 absolute_image = urljoin(page_url, str(candidate))
                 if absolute_image not in images:
                     images.append(absolute_image)
-        price, currency = find_price_text(text)
         results.append({
-            "source": source, "title": _text(link.get("title")) or text[:140], "url": url,
-            "price": price, "currency": currency or "ARS", "expenses": find_expenses_text(text),
-            "location": "", "description": text,
-            "image": images[0] if images else "", "images": images[:12],
+            "source": source,
+            "title": _text(link.get("title")) or _first_text(card, ["h2", "h3"]) or text[:140],
+            "url": url,
+            "price": price,
+            "currency": currency or "ARS",
+            "expenses": find_expenses_text(text),
+            "location": "",
+            "description": text,
+            "image": images[0] if images else "",
+            "images": images[:12],
         })
     return results
 
@@ -235,24 +314,25 @@ def detail_data_from_jsonld(html: str) -> tuple[str, str, str, list[str], str, s
     price = ""
     currency = ""
     expenses = ""
-    for script in soup.select('script[type="application/ld+json"]'):
+    scripts = soup.select('script[type="application/ld+json"], script#__NEXT_DATA__, script[type="application/json"]')
+    for script in scripts:
+        raw = script.string or script.get_text() or ""
         try:
-            payload = json.loads(script.string or "")
+            payload = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             continue
         for item in _walk(payload):
-            nested = item.get("item") if isinstance(item.get("item"), dict) else item
-            address = format_address(nested.get("address") or item.get("address"))
+            address = format_address(item.get("address"))
             if len(address) > len(best_address):
                 best_address = address
-            geo = nested.get("geo") if isinstance(nested.get("geo"), dict) else {}
+            geo = item.get("geo") if isinstance(item.get("geo"), dict) else {}
             latitude = latitude or _text(geo.get("latitude"))
             longitude = longitude or _text(geo.get("longitude"))
-            offers = nested.get("offers") if isinstance(nested.get("offers"), dict) else {}
-            price = price or _text(offers.get("price") or nested.get("price"))
-            currency = currency or _text(offers.get("priceCurrency") or nested.get("priceCurrency"))
-            expenses = expenses or _text(nested.get("maintenanceFee") or nested.get("additionalProperty"))
-            for image in _image_urls(nested.get("image") or item.get("image"), ""):
+            found_price, found_currency = extract_price_from_mapping(item)
+            price = price or found_price
+            currency = currency or found_currency
+            expenses = expenses or _text(item.get("maintenanceFee") or item.get("expenses"))
+            for image in _image_urls(item.get("image") or item.get("images"), ""):
                 if image not in images:
                     images.append(image)
     return best_address, latitude, longitude, images[:12], price, currency, expenses
@@ -261,8 +341,13 @@ def detail_data_from_jsonld(html: str) -> tuple[str, str, str, list[str], str, s
 def detail_location_from_dom(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     selectors = [
-        "[data-qa='POSTING_LOCATION']", "[data-qa*='LOCATION']", "[data-testid*='location']",
-        "[class*='location']", "[class*='address']", "[id*='location']", "[id*='address']",
+        "[data-qa='POSTING_LOCATION']",
+        "[data-qa*='LOCATION']",
+        "[data-testid*='location']",
+        "[class*='location']",
+        "[class*='address']",
+        "[id*='location']",
+        "[id*='address']",
     ]
     candidates: list[str] = []
     for selector in selectors:
@@ -274,12 +359,6 @@ def detail_location_from_dom(html: str) -> str:
         node = soup.select_one(f'meta[property="{name}"]') or soup.select_one(f'meta[name="{name}"]')
         if node and node.get("content"):
             candidates.append(_text(node.get("content")))
-    address_pattern = re.compile(
-        r"\b(?:calle|av\.?|avenida|ruta|presidente|pte\.?|general|gral\.?)?\s*"
-        r"[A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚáéíóúÑñ.' -]{2,45}\s+\d{1,5}\b"
-    )
-    body_text = _text(soup.get_text(" ", strip=True))
-    candidates.extend(match.group(0) for match in address_pattern.finditer(body_text))
     cleaned: list[str] = []
     for candidate in candidates:
         value = re.sub(r"\s+", " ", candidate).strip(" ,-|")
@@ -291,16 +370,35 @@ def detail_location_from_dom(html: str) -> str:
 
 def detail_price_from_dom(html: str) -> tuple[str, str, str]:
     soup = BeautifulSoup(html, "html.parser")
-    selectors = [
-        "[data-qa*='PRICE']", "[data-testid*='price']", "[class*='price']",
-        "[class*='Price']", "[id*='price']", "[id*='Price']",
-    ]
     candidate_texts: list[str] = []
+    selectors = [
+        "[data-qa='POSTING_PRICE']",
+        "[data-qa='POSTING_CARD_PRICE']",
+        "[data-qa*='PRICE']",
+        "[data-testid*='price']",
+        "[class*='price']",
+        "[class*='Price']",
+        "[id*='price']",
+        "[id*='Price']",
+    ]
     for selector in selectors:
-        for node in soup.select(selector)[:20]:
+        for node in soup.select(selector)[:30]:
             text = _text(node.get_text(" ", strip=True))
-            if 2 <= len(text) <= 180:
+            if 2 <= len(text) <= 220:
                 candidate_texts.append(text)
+
+    for attribute in ("content", "value"):
+        for selector in ("meta[itemprop='price']", "meta[property*='price']", "[data-price]", "[data-amount]"):
+            for node in soup.select(selector)[:20]:
+                value = node.get(attribute) or node.get("data-price") or node.get("data-amount")
+                if value:
+                    candidate_texts.append(_text(value))
+
+    for script in soup.select("script"):
+        raw = script.string or script.get_text() or ""
+        if "price" in raw.lower() or "amount" in raw.lower():
+            candidate_texts.append(raw[:500000])
+
     candidate_texts.append(_text(soup.get_text(" ", strip=True)))
 
     price = ""
@@ -318,14 +416,14 @@ def detail_price_from_dom(html: str) -> tuple[str, str, str]:
 
 def enrich_from_detail_pages(page: Page, items: list[dict[str, Any]], source: str) -> list[dict[str, Any]]:
     enriched: list[dict[str, Any]] = []
-    for index, item in enumerate(items[:40], start=1):
+    for item in items[:40]:
         url = _text(item.get("url"))
         if not url:
             enriched.append(item)
             continue
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=45000)
-            page.wait_for_timeout(1400)
+            page.wait_for_timeout(3000)
             html = page.content()
             address, latitude, longitude, detail_images, detail_price, detail_currency, detail_expenses = detail_data_from_jsonld(html)
             if not address:
@@ -354,7 +452,8 @@ def enrich_from_detail_pages(page: Page, items: list[dict[str, Any]], source: st
 def open_context(playwright: Any, headless: bool) -> BrowserContext:
     browser = playwright.chromium.launch(headless=headless)
     return browser.new_context(
-        locale="es-AR", viewport={"width": 1440, "height": 1000},
+        locale="es-AR",
+        viewport={"width": 1440, "height": 1000},
         user_agent=(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
