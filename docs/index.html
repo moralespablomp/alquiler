@@ -61,19 +61,37 @@
     </section>
 
     <section id="map-view" class="tab-view">
-      <div class="section-intro">
-        <div><p class="eyebrow">Comparación visual</p><h2>Distancia al Hospital Italiano de San Justo</h2><p>Destino: Presidente Perón 2231, San Justo. Seleccioná propiedades desde Resultados y actualizá el mapa.</p></div>
-        <button class="button" id="compare-map">Actualizar comparación</button>
+      <div class="map-hero">
+        <div>
+          <p class="eyebrow">Comparación manual</p>
+          <h2>Tiempo hasta el Hospital Italiano de San Justo</h2>
+          <p>Ingresá una dirección exacta para cada propiedad seleccionada. Se guarda automáticamente para futuras comparaciones.</p>
+        </div>
+        <div class="hospital-pill"><span>Destino</span><strong>Presidente Perón 2231, San Justo</strong></div>
       </div>
-      <div class="map-layout">
-        <div id="map"></div>
-        <aside class="comparison-panel"><div id="map-status" class="muted">Todavía no se calculó la comparación.</div><div id="comparison-list"></div></aside>
+
+      <div class="manual-map-layout">
+        <aside class="address-panel">
+          <div class="panel-heading">
+            <div><h3>Direcciones</h3><p id="map-status" class="muted">Completá las direcciones y calculá la comparación.</p></div>
+            <button class="button compact" id="compare-map">Calcular</button>
+          </div>
+          <div id="manual-address-list" class="manual-address-list"></div>
+        </aside>
+        <div class="map-card">
+          <div id="map"></div>
+          <div class="map-legend"><span><i class="hospital-dot"></i> Hospital</span><span><i class="property-dot"></i> Propiedades</span></div>
+        </div>
       </div>
-      <p class="map-note">Las distancias y tiempos son estimaciones en auto. La ubicación se calcula con la dirección que publica el aviso; cuando el portal oculta la altura, la posición puede ser aproximada.</p>
+
+      <section class="comparison-section">
+        <div class="section-title-row"><div><p class="eyebrow">Ranking</p><h3>Comparación de tiempos</h3></div></div>
+        <div id="comparison-list" class="comparison-grid"></div>
+      </section>
     </section>
 
     <section id="saved-view" class="tab-view">
-      <div class="section-intro"><div><p class="eyebrow">Decisión</p><h2>Propiedades seleccionadas</h2><p>Guardá estado, comentarios y observaciones. Los cambios quedan almacenados en esta Mac.</p></div></div>
+      <div class="section-intro"><div><p class="eyebrow">Decisión</p><h2>Propiedades seleccionadas</h2><p>Guardá estado, dirección manual, comentarios y observaciones. Los cambios quedan almacenados en esta Mac.</p></div></div>
       <section id="saved-results" class="saved-results"></section>
     </section>
   </main>
