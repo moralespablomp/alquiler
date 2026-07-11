@@ -122,11 +122,8 @@ def format_address(value: Any) -> str:
     if not isinstance(value, dict):
         return ""
     ordered = [
-        value.get("streetAddress"),
-        value.get("addressLocality"),
-        value.get("addressRegion"),
-        value.get("postalCode"),
-        value.get("addressCountry"),
+        value.get("streetAddress"), value.get("addressLocality"),
+        value.get("addressRegion"), value.get("postalCode"), value.get("addressCountry"),
     ]
     parts: list[str] = []
     for item in ordered:
@@ -160,19 +157,35 @@ def extract_jsonld(html: str, source: str, page_url: str) -> list[dict[str, Any]
                 continue
             seen.add(absolute)
             results.append({
-                "source": source,
-                "title": _text(title),
-                "url": absolute,
+                "source": source, "title": _text(title), "url": absolute,
                 "price": _text(offers.get("price") or nested.get("price")),
                 "currency": _text(offers.get("priceCurrency")),
-                "location": format_address(address),
-                "latitude": _text(geo.get("latitude")),
-                "longitude": _text(geo.get("longitude")),
+                "expenses": "", "location": format_address(address),
+                "latitude": _text(geo.get("latitude")), "longitude": _text(geo.get("longitude")),
                 "description": _text(nested.get("description")),
-                "image": images[0] if images else "",
-                "images": images,
+                "image": images[0] if images else "", "images": images,
             })
     return results
+
+
+def find_price_text(text: str) -> tuple[str, str]:
+    patterns = [
+        r"(?:U\s*\$\s*S|US\$|USD|U\$S)\s*[\d][\d.,]*",
+        r"(?:ARS|AR\$)\s*[\d][\d.,]*",
+        r"\$\s*[\d][\d.,]*",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.I)
+        if match:
+            value = re.sub(r"\s+", "", match.group(0))
+            currency = "USD" if re.search(r"USD|US\$|U\$S|U\s*\$\s*S", value, re.I) else "ARS"
+            return value, currency
+    return "", ""
+
+
+def find_expenses_text(text: str) -> str:
+    match = re.search(r"(?:expensas?|gastos comunes?)\s*(?:aprox\.?|estimadas?)?\s*[:$]?\s*([\d][\d.,]*)", text, re.I)
+    return f"$ {match.group(1)}" if match else ""
 
 
 def extract_cards(html: str, source: str, page_url: str) -> list[dict[str, Any]]:
@@ -203,27 +216,25 @@ def extract_cards(html: str, source: str, page_url: str) -> list[dict[str, Any]]
                 absolute_image = urljoin(page_url, str(candidate))
                 if absolute_image not in images:
                     images.append(absolute_image)
-        price_match = re.search(r"(?:US\$|U\$S|USD|\$)\s*[\d.]+", text, re.I)
+        price, currency = find_price_text(text)
         results.append({
-            "source": source,
-            "title": _text(link.get("title")) or text[:140],
-            "url": url,
-            "price": price_match.group(0) if price_match else "",
-            "currency": "USD" if price_match and "US" in price_match.group(0).upper() else "ARS",
-            "location": "",
-            "description": text,
-            "image": images[0] if images else "",
-            "images": images[:12],
+            "source": source, "title": _text(link.get("title")) or text[:140], "url": url,
+            "price": price, "currency": currency or "ARS", "expenses": find_expenses_text(text),
+            "location": "", "description": text,
+            "image": images[0] if images else "", "images": images[:12],
         })
     return results
 
 
-def detail_location_from_jsonld(html: str) -> tuple[str, str, str, list[str]]:
+def detail_data_from_jsonld(html: str) -> tuple[str, str, str, list[str], str, str, str]:
     soup = BeautifulSoup(html, "html.parser")
     best_address = ""
     latitude = ""
     longitude = ""
     images: list[str] = []
+    price = ""
+    currency = ""
+    expenses = ""
     for script in soup.select('script[type="application/ld+json"]'):
         try:
             payload = json.loads(script.string or "")
@@ -237,22 +248,21 @@ def detail_location_from_jsonld(html: str) -> tuple[str, str, str, list[str]]:
             geo = nested.get("geo") if isinstance(nested.get("geo"), dict) else {}
             latitude = latitude or _text(geo.get("latitude"))
             longitude = longitude or _text(geo.get("longitude"))
+            offers = nested.get("offers") if isinstance(nested.get("offers"), dict) else {}
+            price = price or _text(offers.get("price") or nested.get("price"))
+            currency = currency or _text(offers.get("priceCurrency") or nested.get("priceCurrency"))
+            expenses = expenses or _text(nested.get("maintenanceFee") or nested.get("additionalProperty"))
             for image in _image_urls(nested.get("image") or item.get("image"), ""):
                 if image not in images:
                     images.append(image)
-    return best_address, latitude, longitude, images[:12]
+    return best_address, latitude, longitude, images[:12], price, currency, expenses
 
 
 def detail_location_from_dom(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     selectors = [
-        "[data-qa='POSTING_LOCATION']",
-        "[data-qa*='LOCATION']",
-        "[data-testid*='location']",
-        "[class*='location']",
-        "[class*='address']",
-        "[id*='location']",
-        "[id*='address']",
+        "[data-qa='POSTING_LOCATION']", "[data-qa*='LOCATION']", "[data-testid*='location']",
+        "[class*='location']", "[class*='address']", "[id*='location']", "[id*='address']",
     ]
     candidates: list[str] = []
     for selector in selectors:
@@ -260,8 +270,7 @@ def detail_location_from_dom(html: str) -> str:
             text = _text(node.get_text(" ", strip=True))
             if 5 <= len(text) <= 180:
                 candidates.append(text)
-    meta_names = ["og:street-address", "place:location:address", "twitter:data1"]
-    for name in meta_names:
+    for name in ("og:street-address", "place:location:address", "twitter:data1"):
         node = soup.select_one(f'meta[property="{name}"]') or soup.select_one(f'meta[name="{name}"]')
         if node and node.get("content"):
             candidates.append(_text(node.get("content")))
@@ -280,6 +289,33 @@ def detail_location_from_dom(html: str) -> str:
     return (with_number or cleaned or [""])[0]
 
 
+def detail_price_from_dom(html: str) -> tuple[str, str, str]:
+    soup = BeautifulSoup(html, "html.parser")
+    selectors = [
+        "[data-qa*='PRICE']", "[data-testid*='price']", "[class*='price']",
+        "[class*='Price']", "[id*='price']", "[id*='Price']",
+    ]
+    candidate_texts: list[str] = []
+    for selector in selectors:
+        for node in soup.select(selector)[:20]:
+            text = _text(node.get_text(" ", strip=True))
+            if 2 <= len(text) <= 180:
+                candidate_texts.append(text)
+    candidate_texts.append(_text(soup.get_text(" ", strip=True)))
+
+    price = ""
+    currency = ""
+    expenses = ""
+    for text in candidate_texts:
+        if not price:
+            price, currency = find_price_text(text)
+        if not expenses:
+            expenses = find_expenses_text(text)
+        if price and expenses:
+            break
+    return price, currency, expenses
+
+
 def enrich_from_detail_pages(page: Page, items: list[dict[str, Any]], source: str) -> list[dict[str, Any]]:
     enriched: list[dict[str, Any]] = []
     for index, item in enumerate(items[:40], start=1):
@@ -291,13 +327,17 @@ def enrich_from_detail_pages(page: Page, items: list[dict[str, Any]], source: st
             page.goto(url, wait_until="domcontentloaded", timeout=45000)
             page.wait_for_timeout(1400)
             html = page.content()
-            address, latitude, longitude, detail_images = detail_location_from_jsonld(html)
+            address, latitude, longitude, detail_images, detail_price, detail_currency, detail_expenses = detail_data_from_jsonld(html)
             if not address:
                 address = detail_location_from_dom(html)
+            dom_price, dom_currency, dom_expenses = detail_price_from_dom(html)
             if address:
                 item["location"] = address
             item["latitude"] = latitude or item.get("latitude", "")
             item["longitude"] = longitude or item.get("longitude", "")
+            item["price"] = detail_price or dom_price or item.get("price", "")
+            item["currency"] = detail_currency or dom_currency or item.get("currency", "")
+            item["expenses"] = detail_expenses or dom_expenses or item.get("expenses", "")
             merged_images: list[str] = []
             for image in [*(item.get("images") or []), *detail_images]:
                 absolute = urljoin(url, image)
@@ -308,16 +348,13 @@ def enrich_from_detail_pages(page: Page, items: list[dict[str, Any]], source: st
         except Exception:
             pass
         enriched.append(item)
-        if index >= 40:
-            break
     return enriched
 
 
 def open_context(playwright: Any, headless: bool) -> BrowserContext:
     browser = playwright.chromium.launch(headless=headless)
     return browser.new_context(
-        locale="es-AR",
-        viewport={"width": 1440, "height": 1000},
+        locale="es-AR", viewport={"width": 1440, "height": 1000},
         user_agent=(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
